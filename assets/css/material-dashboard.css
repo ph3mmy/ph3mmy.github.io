@@ -4364,8 +4364,8 @@ h2.title {
   bottom: 0;
   left: 0;
   z-index: 1;
-  width: 280px;
-  /*width: 260px;*/
+  width: 260px;
+  /*width: 280px;*/
   background: #FFFFFF;
   box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.42), 0 4px 25px 0px rgba(0, 0, 0, 0.12), 0 8px 10px -5px rgba(0, 0, 0, 0.2); }
   .sidebar .logo-img,
@@ -7198,7 +7198,8 @@ fieldset[disabled] .checkbox, fieldset[disabled] .checkbox input[type=checkbox],
 .wrapper {
   position: relative;
   top: 0;
-  height: 100vh; }
+  height: 100vh;
+}
   .wrapper:after {
     display: table;
     clear: both;
