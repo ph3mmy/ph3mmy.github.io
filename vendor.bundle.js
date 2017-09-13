@@ -1967,6 +1967,175 @@ Object.defineProperty(__webpack_exports__, "__esModule", { value: true });
 
 /***/ }),
 
+/***/ "../../../../batch-processor/src/batch-processor.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var utils = __webpack_require__("../../../../batch-processor/src/utils.js");
+
+module.exports = function batchProcessorMaker(options) {
+    options             = options || {};
+    var reporter        = options.reporter;
+    var asyncProcess    = utils.getOption(options, "async", true);
+    var autoProcess     = utils.getOption(options, "auto", true);
+
+    if(autoProcess && !asyncProcess) {
+        reporter && reporter.warn("Invalid options combination. auto=true and async=false is invalid. Setting async=true.");
+        asyncProcess = true;
+    }
+
+    var batch = Batch();
+    var asyncFrameHandler;
+    var isProcessing = false;
+
+    function addFunction(level, fn) {
+        if(!isProcessing && autoProcess && asyncProcess && batch.size() === 0) {
+            // Since this is async, it is guaranteed to be executed after that the fn is added to the batch.
+            // This needs to be done before, since we're checking the size of the batch to be 0.
+            processBatchAsync();
+        }
+
+        batch.add(level, fn);
+    }
+
+    function processBatch() {
+        // Save the current batch, and create a new batch so that incoming functions are not added into the currently processing batch.
+        // Continue processing until the top-level batch is empty (functions may be added to the new batch while processing, and so on).
+        isProcessing = true;
+        while (batch.size()) {
+            var processingBatch = batch;
+            batch = Batch();
+            processingBatch.process();
+        }
+        isProcessing = false;
+    }
+
+    function forceProcessBatch(localAsyncProcess) {
+        if (isProcessing) {
+            return;
+        }
+
+        if(localAsyncProcess === undefined) {
+            localAsyncProcess = asyncProcess;
+        }
+
+        if(asyncFrameHandler) {
+            cancelFrame(asyncFrameHandler);
+            asyncFrameHandler = null;
+        }
+
+        if(localAsyncProcess) {
+            processBatchAsync();
+        } else {
+            processBatch();
+        }
+    }
+
+    function processBatchAsync() {
+        asyncFrameHandler = requestFrame(processBatch);
+    }
+
+    function clearBatch() {
+        batch           = {};
+        batchSize       = 0;
+        topLevel        = 0;
+        bottomLevel     = 0;
+    }
+
+    function cancelFrame(listener) {
+        // var cancel = window.cancelAnimationFrame || window.mozCancelAnimationFrame || window.webkitCancelAnimationFrame || window.clearTimeout;
+        var cancel = clearTimeout;
+        return cancel(listener);
+    }
+
+    function requestFrame(callback) {
+        // var raf = window.requestAnimationFrame || window.mozRequestAnimationFrame || window.webkitRequestAnimationFrame || function(fn) { return window.setTimeout(fn, 20); };
+        var raf = function(fn) { return setTimeout(fn, 0); };
+        return raf(callback);
+    }
+
+    return {
+        add: addFunction,
+        force: forceProcessBatch
+    };
+};
+
+function Batch() {
+    var batch       = {};
+    var size        = 0;
+    var topLevel    = 0;
+    var bottomLevel = 0;
+
+    function add(level, fn) {
+        if(!fn) {
+            fn = level;
+            level = 0;
+        }
+
+        if(level > topLevel) {
+            topLevel = level;
+        } else if(level < bottomLevel) {
+            bottomLevel = level;
+        }
+
+        if(!batch[level]) {
+            batch[level] = [];
+        }
+
+        batch[level].push(fn);
+        size++;
+    }
+
+    function process() {
+        for(var level = bottomLevel; level <= topLevel; level++) {
+            var fns = batch[level];
+
+            for(var i = 0; i < fns.length; i++) {
+                var fn = fns[i];
+                fn();
+            }
+        }
+    }
+
+    function getSize() {
+        return size;
+    }
+
+    return {
+        add: add,
+        process: process,
+        size: getSize
+    };
+}
+
+
+/***/ }),
+
+/***/ "../../../../batch-processor/src/utils.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var utils = module.exports = {};
+
+utils.getOption = getOption;
+
+function getOption(options, name, defaultValue) {
+    var value = options[name];
+
+    if((value === undefined || value === null) && defaultValue !== undefined) {
+        return defaultValue;
+    }
+
+    return value;
+}
+
+
+/***/ }),
+
 /***/ "../../../../css-loader/lib/css-base.js":
 /***/ (function(module, exports) {
 
@@ -2046,6 +2215,1575 @@ function toComment(sourceMap) {
 
 	return '/*# ' + data + ' */';
 }
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/browser-detector.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var detector = module.exports = {};
+
+detector.isIE = function(version) {
+    function isAnyIeVersion() {
+        var agent = navigator.userAgent.toLowerCase();
+        return agent.indexOf("msie") !== -1 || agent.indexOf("trident") !== -1 || agent.indexOf(" edge/") !== -1;
+    }
+
+    if(!isAnyIeVersion()) {
+        return false;
+    }
+
+    if(!version) {
+        return true;
+    }
+
+    //Shamelessly stolen from https://gist.github.com/padolsey/527683
+    var ieVersion = (function(){
+        var undef,
+            v = 3,
+            div = document.createElement("div"),
+            all = div.getElementsByTagName("i");
+
+        do {
+            div.innerHTML = "<!--[if gt IE " + (++v) + "]><i></i><![endif]-->";
+        }
+        while (all[0]);
+
+        return v > 4 ? v : undef;
+    }());
+
+    return version === ieVersion;
+};
+
+detector.isLegacyOpera = function() {
+    return !!window.opera;
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/collection-utils.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var utils = module.exports = {};
+
+/**
+ * Loops through the collection and calls the callback for each element. if the callback returns truthy, the loop is broken and returns the same value.
+ * @public
+ * @param {*} collection The collection to loop through. Needs to have a length property set and have indices set from 0 to length - 1.
+ * @param {function} callback The callback to be called for each element. The element will be given as a parameter to the callback. If this callback returns truthy, the loop is broken and the same value is returned.
+ * @returns {*} The value that a callback has returned (if truthy). Otherwise nothing.
+ */
+utils.forEach = function(collection, callback) {
+    for(var i = 0; i < collection.length; i++) {
+        var result = callback(collection[i]);
+        if(result) {
+            return result;
+        }
+    }
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/detection-strategy/object.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+/**
+ * Resize detection strategy that injects objects to elements in order to detect resize events.
+ * Heavily inspired by: http://www.backalleycoder.com/2013/03/18/cross-browser-event-based-element-resize-detection/
+ */
+
+
+
+var browserDetector = __webpack_require__("../../../../element-resize-detector/src/browser-detector.js");
+
+module.exports = function(options) {
+    options             = options || {};
+    var reporter        = options.reporter;
+    var batchProcessor  = options.batchProcessor;
+    var getState        = options.stateHandler.getState;
+
+    if(!reporter) {
+        throw new Error("Missing required dependency: reporter.");
+    }
+
+    /**
+     * Adds a resize event listener to the element.
+     * @public
+     * @param {element} element The element that should have the listener added.
+     * @param {function} listener The listener callback to be called for each resize event of the element. The element will be given as a parameter to the listener callback.
+     */
+    function addListener(element, listener) {
+        if(!getObject(element)) {
+            throw new Error("Element is not detectable by this strategy.");
+        }
+
+        function listenerProxy() {
+            listener(element);
+        }
+
+        if(browserDetector.isIE(8)) {
+            //IE 8 does not support object, but supports the resize event directly on elements.
+            getState(element).object = {
+                proxy: listenerProxy
+            };
+            element.attachEvent("onresize", listenerProxy);
+        } else {
+            var object = getObject(element);
+            object.contentDocument.defaultView.addEventListener("resize", listenerProxy);
+        }
+    }
+
+    /**
+     * Makes an element detectable and ready to be listened for resize events. Will call the callback when the element is ready to be listened for resize changes.
+     * @private
+     * @param {object} options Optional options object.
+     * @param {element} element The element to make detectable
+     * @param {function} callback The callback to be called when the element is ready to be listened for resize changes. Will be called with the element as first parameter.
+     */
+    function makeDetectable(options, element, callback) {
+        if (!callback) {
+            callback = element;
+            element = options;
+            options = null;
+        }
+
+        options = options || {};
+        var debug = options.debug;
+
+        function injectObject(element, callback) {
+            var OBJECT_STYLE = "display: block; position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; padding: 0; margin: 0; opacity: 0; z-index: -1000; pointer-events: none;";
+
+            //The target element needs to be positioned (everything except static) so the absolute positioned object will be positioned relative to the target element.
+
+            // Position altering may be performed directly or on object load, depending on if style resolution is possible directly or not.
+            var positionCheckPerformed = false;
+
+            // The element may not yet be attached to the DOM, and therefore the style object may be empty in some browsers.
+            // Since the style object is a reference, it will be updated as soon as the element is attached to the DOM.
+            var style = window.getComputedStyle(element);
+            var width = element.offsetWidth;
+            var height = element.offsetHeight;
+
+            getState(element).startSize = {
+                width: width,
+                height: height
+            };
+
+            function mutateDom() {
+                function alterPositionStyles() {
+                    if(style.position === "static") {
+                        element.style.position = "relative";
+
+                        var removeRelativeStyles = function(reporter, element, style, property) {
+                            function getNumericalValue(value) {
+                                return value.replace(/[^-\d\.]/g, "");
+                            }
+
+                            var value = style[property];
+
+                            if(value !== "auto" && getNumericalValue(value) !== "0") {
+                                reporter.warn("An element that is positioned static has style." + property + "=" + value + " which is ignored due to the static positioning. The element will need to be positioned relative, so the style." + property + " will be set to 0. Element: ", element);
+                                element.style[property] = 0;
+                            }
+                        };
+
+                        //Check so that there are no accidental styles that will make the element styled differently now that is is relative.
+                        //If there are any, set them to 0 (this should be okay with the user since the style properties did nothing before [since the element was positioned static] anyway).
+                        removeRelativeStyles(reporter, element, style, "top");
+                        removeRelativeStyles(reporter, element, style, "right");
+                        removeRelativeStyles(reporter, element, style, "bottom");
+                        removeRelativeStyles(reporter, element, style, "left");
+                    }
+                }
+
+                function onObjectLoad() {
+                    // The object has been loaded, which means that the element now is guaranteed to be attached to the DOM.
+                    if (!positionCheckPerformed) {
+                        alterPositionStyles();
+                    }
+
+                    /*jshint validthis: true */
+
+                    function getDocument(element, callback) {
+                        //Opera 12 seem to call the object.onload before the actual document has been created.
+                        //So if it is not present, poll it with an timeout until it is present.
+                        //TODO: Could maybe be handled better with object.onreadystatechange or similar.
+                        if(!element.contentDocument) {
+                            setTimeout(function checkForObjectDocument() {
+                                getDocument(element, callback);
+                            }, 100);
+
+                            return;
+                        }
+
+                        callback(element.contentDocument);
+                    }
+
+                    //Mutating the object element here seems to fire another load event.
+                    //Mutating the inner document of the object element is fine though.
+                    var objectElement = this;
+
+                    //Create the style element to be added to the object.
+                    getDocument(objectElement, function onObjectDocumentReady(objectDocument) {
+                        //Notify that the element is ready to be listened to.
+                        callback(element);
+                    });
+                }
+
+                // The element may be detached from the DOM, and some browsers does not support style resolving of detached elements.
+                // The alterPositionStyles needs to be delayed until we know the element has been attached to the DOM (which we are sure of when the onObjectLoad has been fired), if style resolution is not possible.
+                if (style.position !== "") {
+                    alterPositionStyles(style);
+                    positionCheckPerformed = true;
+                }
+
+                //Add an object element as a child to the target element that will be listened to for resize events.
+                var object = document.createElement("object");
+                object.style.cssText = OBJECT_STYLE;
+                object.tabIndex = -1;
+                object.type = "text/html";
+                object.onload = onObjectLoad;
+
+                //Safari: This must occur before adding the object to the DOM.
+                //IE: Does not like that this happens before, even if it is also added after.
+                if(!browserDetector.isIE()) {
+                    object.data = "about:blank";
+                }
+
+                element.appendChild(object);
+                getState(element).object = object;
+
+                //IE: This must occur after adding the object to the DOM.
+                if(browserDetector.isIE()) {
+                    object.data = "about:blank";
+                }
+            }
+
+            if(batchProcessor) {
+                batchProcessor.add(mutateDom);
+            } else {
+                mutateDom();
+            }
+        }
+
+        if(browserDetector.isIE(8)) {
+            //IE 8 does not support objects properly. Luckily they do support the resize event.
+            //So do not inject the object and notify that the element is already ready to be listened to.
+            //The event handler for the resize event is attached in the utils.addListener instead.
+            callback(element);
+        } else {
+            injectObject(element, callback);
+        }
+    }
+
+    /**
+     * Returns the child object of the target element.
+     * @private
+     * @param {element} element The target element.
+     * @returns The object element of the target.
+     */
+    function getObject(element) {
+        return getState(element).object;
+    }
+
+    function uninstall(element) {
+        if(browserDetector.isIE(8)) {
+            element.detachEvent("onresize", getState(element).object.proxy);
+        } else {
+            element.removeChild(getObject(element));
+        }
+        delete getState(element).object;
+    }
+
+    return {
+        makeDetectable: makeDetectable,
+        addListener: addListener,
+        uninstall: uninstall
+    };
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/detection-strategy/scroll.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+/**
+ * Resize detection strategy that injects divs to elements in order to detect resize events on scroll events.
+ * Heavily inspired by: https://github.com/marcj/css-element-queries/blob/master/src/ResizeSensor.js
+ */
+
+
+
+var forEach = __webpack_require__("../../../../element-resize-detector/src/collection-utils.js").forEach;
+
+module.exports = function(options) {
+    options             = options || {};
+    var reporter        = options.reporter;
+    var batchProcessor  = options.batchProcessor;
+    var getState        = options.stateHandler.getState;
+    var hasState        = options.stateHandler.hasState;
+    var idHandler       = options.idHandler;
+
+    if (!batchProcessor) {
+        throw new Error("Missing required dependency: batchProcessor");
+    }
+
+    if (!reporter) {
+        throw new Error("Missing required dependency: reporter.");
+    }
+
+    //TODO: Could this perhaps be done at installation time?
+    var scrollbarSizes = getScrollbarSizes();
+
+    // Inject the scrollbar styling that prevents them from appearing sometimes in Chrome.
+    // The injected container needs to have a class, so that it may be styled with CSS (pseudo elements).
+    var styleId = "erd_scroll_detection_scrollbar_style";
+    var detectionContainerClass = "erd_scroll_detection_container";
+    injectScrollStyle(styleId, detectionContainerClass);
+
+    function getScrollbarSizes() {
+        var width = 500;
+        var height = 500;
+
+        var child = document.createElement("div");
+        child.style.cssText = "position: absolute; width: " + width*2 + "px; height: " + height*2 + "px; visibility: hidden; margin: 0; padding: 0;";
+
+        var container = document.createElement("div");
+        container.style.cssText = "position: absolute; width: " + width + "px; height: " + height + "px; overflow: scroll; visibility: none; top: " + -width*3 + "px; left: " + -height*3 + "px; visibility: hidden; margin: 0; padding: 0;";
+
+        container.appendChild(child);
+
+        document.body.insertBefore(container, document.body.firstChild);
+
+        var widthSize = width - container.clientWidth;
+        var heightSize = height - container.clientHeight;
+
+        document.body.removeChild(container);
+
+        return {
+            width: widthSize,
+            height: heightSize
+        };
+    }
+
+    function injectScrollStyle(styleId, containerClass) {
+        function injectStyle(style, method) {
+            method = method || function (element) {
+                document.head.appendChild(element);
+            };
+
+            var styleElement = document.createElement("style");
+            styleElement.innerHTML = style;
+            styleElement.id = styleId;
+            method(styleElement);
+            return styleElement;
+        }
+
+        if (!document.getElementById(styleId)) {
+            var containerAnimationClass = containerClass + "_animation";
+            var containerAnimationActiveClass = containerClass + "_animation_active";
+            var style = "/* Created by the element-resize-detector library. */\n";
+            style += "." + containerClass + " > div::-webkit-scrollbar { display: none; }\n\n";
+            style += "." + containerAnimationActiveClass + " { -webkit-animation-duration: 0.1s; animation-duration: 0.1s; -webkit-animation-name: " + containerAnimationClass + "; animation-name: " + containerAnimationClass + "; }\n";
+            style += "@-webkit-keyframes " + containerAnimationClass +  " { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }\n";
+            style += "@keyframes " + containerAnimationClass +          " { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }";
+            injectStyle(style);
+        }
+    }
+
+    function addAnimationClass(element) {
+        element.className += " " + detectionContainerClass + "_animation_active";
+    }
+
+    function addEvent(el, name, cb) {
+        if (el.addEventListener) {
+            el.addEventListener(name, cb);
+        } else if(el.attachEvent) {
+            el.attachEvent("on" + name, cb);
+        } else {
+            return reporter.error("[scroll] Don't know how to add event listeners.");
+        }
+    }
+
+    function removeEvent(el, name, cb) {
+        if (el.removeEventListener) {
+            el.removeEventListener(name, cb);
+        } else if(el.detachEvent) {
+            el.detachEvent("on" + name, cb);
+        } else {
+            return reporter.error("[scroll] Don't know how to remove event listeners.");
+        }
+    }
+
+    function getExpandElement(element) {
+        return getState(element).container.childNodes[0].childNodes[0].childNodes[0];
+    }
+
+    function getShrinkElement(element) {
+        return getState(element).container.childNodes[0].childNodes[0].childNodes[1];
+    }
+
+    /**
+     * Adds a resize event listener to the element.
+     * @public
+     * @param {element} element The element that should have the listener added.
+     * @param {function} listener The listener callback to be called for each resize event of the element. The element will be given as a parameter to the listener callback.
+     */
+    function addListener(element, listener) {
+        var listeners = getState(element).listeners;
+
+        if (!listeners.push) {
+            throw new Error("Cannot add listener to an element that is not detectable.");
+        }
+
+        getState(element).listeners.push(listener);
+    }
+
+    /**
+     * Makes an element detectable and ready to be listened for resize events. Will call the callback when the element is ready to be listened for resize changes.
+     * @private
+     * @param {object} options Optional options object.
+     * @param {element} element The element to make detectable
+     * @param {function} callback The callback to be called when the element is ready to be listened for resize changes. Will be called with the element as first parameter.
+     */
+    function makeDetectable(options, element, callback) {
+        if (!callback) {
+            callback = element;
+            element = options;
+            options = null;
+        }
+
+        options = options || {};
+
+        function debug() {
+            if (options.debug) {
+                var args = Array.prototype.slice.call(arguments);
+                args.unshift(idHandler.get(element), "Scroll: ");
+                if (reporter.log.apply) {
+                    reporter.log.apply(null, args);
+                } else {
+                    for (var i = 0; i < args.length; i++) {
+                        reporter.log(args[i]);
+                    }
+                }
+            }
+        }
+
+        function isDetached(element) {
+            function isInDocument(element) {
+                return element === element.ownerDocument.body || element.ownerDocument.body.contains(element);
+            }
+
+            if (!isInDocument(element)) {
+                return true;
+            }
+
+            // FireFox returns null style in hidden iframes. See https://github.com/wnr/element-resize-detector/issues/68 and https://bugzilla.mozilla.org/show_bug.cgi?id=795520
+            if (getComputedStyle(element) === null) {
+                return true;
+            }
+
+            return false;
+        }
+
+        function isUnrendered(element) {
+            // Check the absolute positioned container since the top level container is display: inline.
+            var container = getState(element).container.childNodes[0];
+            var style = getComputedStyle(container);
+            return !style.width || style.width.indexOf("px") === -1; //Can only compute pixel value when rendered.
+        }
+
+        function getStyle() {
+            // Some browsers only force layouts when actually reading the style properties of the style object, so make sure that they are all read here,
+            // so that the user of the function can be sure that it will perform the layout here, instead of later (important for batching).
+            var elementStyle            = getComputedStyle(element);
+            var style                   = {};
+            style.position              = elementStyle.position;
+            style.width                 = element.offsetWidth;
+            style.height                = element.offsetHeight;
+            style.top                   = elementStyle.top;
+            style.right                 = elementStyle.right;
+            style.bottom                = elementStyle.bottom;
+            style.left                  = elementStyle.left;
+            style.widthCSS              = elementStyle.width;
+            style.heightCSS             = elementStyle.height;
+            return style;
+        }
+
+        function storeStartSize() {
+            var style = getStyle();
+            getState(element).startSize = {
+                width: style.width,
+                height: style.height
+            };
+            debug("Element start size", getState(element).startSize);
+        }
+
+        function initListeners() {
+            getState(element).listeners = [];
+        }
+
+        function storeStyle() {
+            debug("storeStyle invoked.");
+            if (!getState(element)) {
+                debug("Aborting because element has been uninstalled");
+                return;
+            }
+
+            var style = getStyle();
+            getState(element).style = style;
+        }
+
+        function storeCurrentSize(element, width, height) {
+            getState(element).lastWidth = width;
+            getState(element).lastHeight  = height;
+        }
+
+        function getExpandChildElement(element) {
+            return getExpandElement(element).childNodes[0];
+        }
+
+        function getWidthOffset() {
+            return 2 * scrollbarSizes.width + 1;
+        }
+
+        function getHeightOffset() {
+            return 2 * scrollbarSizes.height + 1;
+        }
+
+        function getExpandWidth(width) {
+            return width + 10 + getWidthOffset();
+        }
+
+        function getExpandHeight(height) {
+            return height + 10 + getHeightOffset();
+        }
+
+        function getShrinkWidth(width) {
+            return width * 2 + getWidthOffset();
+        }
+
+        function getShrinkHeight(height) {
+            return height * 2 + getHeightOffset();
+        }
+
+        function positionScrollbars(element, width, height) {
+            var expand          = getExpandElement(element);
+            var shrink          = getShrinkElement(element);
+            var expandWidth     = getExpandWidth(width);
+            var expandHeight    = getExpandHeight(height);
+            var shrinkWidth     = getShrinkWidth(width);
+            var shrinkHeight    = getShrinkHeight(height);
+            expand.scrollLeft   = expandWidth;
+            expand.scrollTop    = expandHeight;
+            shrink.scrollLeft   = shrinkWidth;
+            shrink.scrollTop    = shrinkHeight;
+        }
+
+        function injectContainerElement() {
+            var container = getState(element).container;
+
+            if (!container) {
+                container                   = document.createElement("div");
+                container.className         = detectionContainerClass;
+                container.style.cssText     = "visibility: hidden; display: inline; width: 0px; height: 0px; z-index: -1; overflow: hidden; margin: 0; padding: 0;";
+                getState(element).container = container;
+                addAnimationClass(container);
+                element.appendChild(container);
+
+                var onAnimationStart = function () {
+                    getState(element).onRendered && getState(element).onRendered();
+                };
+
+                addEvent(container, "animationstart", onAnimationStart);
+
+                // Store the event handler here so that they may be removed when uninstall is called.
+                // See uninstall function for an explanation why it is needed.
+                getState(element).onAnimationStart = onAnimationStart;
+            }
+
+            return container;
+        }
+
+        function injectScrollElements() {
+            function alterPositionStyles() {
+                var style = getState(element).style;
+
+                if(style.position === "static") {
+                    element.style.position = "relative";
+
+                    var removeRelativeStyles = function(reporter, element, style, property) {
+                        function getNumericalValue(value) {
+                            return value.replace(/[^-\d\.]/g, "");
+                        }
+
+                        var value = style[property];
+
+                        if(value !== "auto" && getNumericalValue(value) !== "0") {
+                            reporter.warn("An element that is positioned static has style." + property + "=" + value + " which is ignored due to the static positioning. The element will need to be positioned relative, so the style." + property + " will be set to 0. Element: ", element);
+                            element.style[property] = 0;
+                        }
+                    };
+
+                    //Check so that there are no accidental styles that will make the element styled differently now that is is relative.
+                    //If there are any, set them to 0 (this should be okay with the user since the style properties did nothing before [since the element was positioned static] anyway).
+                    removeRelativeStyles(reporter, element, style, "top");
+                    removeRelativeStyles(reporter, element, style, "right");
+                    removeRelativeStyles(reporter, element, style, "bottom");
+                    removeRelativeStyles(reporter, element, style, "left");
+                }
+            }
+
+            function getLeftTopBottomRightCssText(left, top, bottom, right) {
+                left = (!left ? "0" : (left + "px"));
+                top = (!top ? "0" : (top + "px"));
+                bottom = (!bottom ? "0" : (bottom + "px"));
+                right = (!right ? "0" : (right + "px"));
+
+                return "left: " + left + "; top: " + top + "; right: " + right + "; bottom: " + bottom + ";";
+            }
+
+            debug("Injecting elements");
+
+            if (!getState(element)) {
+                debug("Aborting because element has been uninstalled");
+                return;
+            }
+
+            alterPositionStyles();
+
+            var rootContainer = getState(element).container;
+
+            if (!rootContainer) {
+                rootContainer = injectContainerElement();
+            }
+
+            // Due to this WebKit bug https://bugs.webkit.org/show_bug.cgi?id=80808 (currently fixed in Blink, but still present in WebKit browsers such as Safari),
+            // we need to inject two containers, one that is width/height 100% and another that is left/top -1px so that the final container always is 1x1 pixels bigger than
+            // the targeted element.
+            // When the bug is resolved, "containerContainer" may be removed.
+
+            // The outer container can occasionally be less wide than the targeted when inside inline elements element in WebKit (see https://bugs.webkit.org/show_bug.cgi?id=152980).
+            // This should be no problem since the inner container either way makes sure the injected scroll elements are at least 1x1 px.
+
+            var scrollbarWidth          = scrollbarSizes.width;
+            var scrollbarHeight         = scrollbarSizes.height;
+            var containerContainerStyle = "position: absolute; flex: none; overflow: hidden; z-index: -1; visibility: hidden; width: 100%; height: 100%; left: 0px; top: 0px;";
+            var containerStyle          = "position: absolute; flex: none; overflow: hidden; z-index: -1; visibility: hidden; " + getLeftTopBottomRightCssText(-(1 + scrollbarWidth), -(1 + scrollbarHeight), -scrollbarHeight, -scrollbarWidth);
+            var expandStyle             = "position: absolute; flex: none; overflow: scroll; z-index: -1; visibility: hidden; width: 100%; height: 100%;";
+            var shrinkStyle             = "position: absolute; flex: none; overflow: scroll; z-index: -1; visibility: hidden; width: 100%; height: 100%;";
+            var expandChildStyle        = "position: absolute; left: 0; top: 0;";
+            var shrinkChildStyle        = "position: absolute; width: 200%; height: 200%;";
+
+            var containerContainer      = document.createElement("div");
+            var container               = document.createElement("div");
+            var expand                  = document.createElement("div");
+            var expandChild             = document.createElement("div");
+            var shrink                  = document.createElement("div");
+            var shrinkChild             = document.createElement("div");
+
+            // Some browsers choke on the resize system being rtl, so force it to ltr. https://github.com/wnr/element-resize-detector/issues/56
+            // However, dir should not be set on the top level container as it alters the dimensions of the target element in some browsers.
+            containerContainer.dir              = "ltr";
+
+            containerContainer.style.cssText    = containerContainerStyle;
+            containerContainer.className        = detectionContainerClass;
+            container.className                 = detectionContainerClass;
+            container.style.cssText             = containerStyle;
+            expand.style.cssText                = expandStyle;
+            expandChild.style.cssText           = expandChildStyle;
+            shrink.style.cssText                = shrinkStyle;
+            shrinkChild.style.cssText           = shrinkChildStyle;
+
+            expand.appendChild(expandChild);
+            shrink.appendChild(shrinkChild);
+            container.appendChild(expand);
+            container.appendChild(shrink);
+            containerContainer.appendChild(container);
+            rootContainer.appendChild(containerContainer);
+
+            function onExpandScroll() {
+                getState(element).onExpand && getState(element).onExpand();
+            }
+
+            function onShrinkScroll() {
+                getState(element).onShrink && getState(element).onShrink();
+            }
+
+            addEvent(expand, "scroll", onExpandScroll);
+            addEvent(shrink, "scroll", onShrinkScroll);
+
+            // Store the event handlers here so that they may be removed when uninstall is called.
+            // See uninstall function for an explanation why it is needed.
+            getState(element).onExpandScroll = onExpandScroll;
+            getState(element).onShrinkScroll = onShrinkScroll;
+        }
+
+        function registerListenersAndPositionElements() {
+            function updateChildSizes(element, width, height) {
+                var expandChild             = getExpandChildElement(element);
+                var expandWidth             = getExpandWidth(width);
+                var expandHeight            = getExpandHeight(height);
+                expandChild.style.width     = expandWidth + "px";
+                expandChild.style.height    = expandHeight + "px";
+            }
+
+            function updateDetectorElements(done) {
+                var width           = element.offsetWidth;
+                var height          = element.offsetHeight;
+
+                debug("Storing current size", width, height);
+
+                // Store the size of the element sync here, so that multiple scroll events may be ignored in the event listeners.
+                // Otherwise the if-check in handleScroll is useless.
+                storeCurrentSize(element, width, height);
+
+                // Since we delay the processing of the batch, there is a risk that uninstall has been called before the batch gets to execute.
+                // Since there is no way to cancel the fn executions, we need to add an uninstall guard to all fns of the batch.
+
+                batchProcessor.add(0, function performUpdateChildSizes() {
+                    if (!getState(element)) {
+                        debug("Aborting because element has been uninstalled");
+                        return;
+                    }
+
+                    if (!areElementsInjected()) {
+                        debug("Aborting because element container has not been initialized");
+                        return;
+                    }
+
+                    if (options.debug) {
+                        var w = element.offsetWidth;
+                        var h = element.offsetHeight;
+
+                        if (w !== width || h !== height) {
+                            reporter.warn(idHandler.get(element), "Scroll: Size changed before updating detector elements.");
+                        }
+                    }
+
+                    updateChildSizes(element, width, height);
+                });
+
+                batchProcessor.add(1, function updateScrollbars() {
+                    if (!getState(element)) {
+                        debug("Aborting because element has been uninstalled");
+                        return;
+                    }
+
+                    if (!areElementsInjected()) {
+                        debug("Aborting because element container has not been initialized");
+                        return;
+                    }
+
+                    positionScrollbars(element, width, height);
+                });
+
+                if (done) {
+                    batchProcessor.add(2, function () {
+                        if (!getState(element)) {
+                            debug("Aborting because element has been uninstalled");
+                            return;
+                        }
+
+                        if (!areElementsInjected()) {
+                          debug("Aborting because element container has not been initialized");
+                          return;
+                        }
+
+                        done();
+                    });
+                }
+            }
+
+            function areElementsInjected() {
+                return !!getState(element).container;
+            }
+
+            function notifyListenersIfNeeded() {
+                function isFirstNotify() {
+                    return getState(element).lastNotifiedWidth === undefined;
+                }
+
+                debug("notifyListenersIfNeeded invoked");
+
+                var state = getState(element);
+
+                // Don't notify the if the current size is the start size, and this is the first notification.
+                if (isFirstNotify() && state.lastWidth === state.startSize.width && state.lastHeight === state.startSize.height) {
+                    return debug("Not notifying: Size is the same as the start size, and there has been no notification yet.");
+                }
+
+                // Don't notify if the size already has been notified.
+                if (state.lastWidth === state.lastNotifiedWidth && state.lastHeight === state.lastNotifiedHeight) {
+                    return debug("Not notifying: Size already notified");
+                }
+
+
+                debug("Current size not notified, notifying...");
+                state.lastNotifiedWidth = state.lastWidth;
+                state.lastNotifiedHeight = state.lastHeight;
+                forEach(getState(element).listeners, function (listener) {
+                    listener(element);
+                });
+            }
+
+            function handleRender() {
+                debug("startanimation triggered.");
+
+                if (isUnrendered(element)) {
+                    debug("Ignoring since element is still unrendered...");
+                    return;
+                }
+
+                debug("Element rendered.");
+                var expand = getExpandElement(element);
+                var shrink = getShrinkElement(element);
+                if (expand.scrollLeft === 0 || expand.scrollTop === 0 || shrink.scrollLeft === 0 || shrink.scrollTop === 0) {
+                    debug("Scrollbars out of sync. Updating detector elements...");
+                    updateDetectorElements(notifyListenersIfNeeded);
+                }
+            }
+
+            function handleScroll() {
+                debug("Scroll detected.");
+
+                if (isUnrendered(element)) {
+                    // Element is still unrendered. Skip this scroll event.
+                    debug("Scroll event fired while unrendered. Ignoring...");
+                    return;
+                }
+
+                var width = element.offsetWidth;
+                var height = element.offsetHeight;
+
+                if (width !== element.lastWidth || height !== element.lastHeight) {
+                    debug("Element size changed.");
+                    updateDetectorElements(notifyListenersIfNeeded);
+                } else {
+                    debug("Element size has not changed (" + width + "x" + height + ").");
+                }
+            }
+
+            debug("registerListenersAndPositionElements invoked.");
+
+            if (!getState(element)) {
+                debug("Aborting because element has been uninstalled");
+                return;
+            }
+
+            getState(element).onRendered = handleRender;
+            getState(element).onExpand = handleScroll;
+            getState(element).onShrink = handleScroll;
+
+            var style = getState(element).style;
+            updateChildSizes(element, style.width, style.height);
+        }
+
+        function finalizeDomMutation() {
+            debug("finalizeDomMutation invoked.");
+
+            if (!getState(element)) {
+                debug("Aborting because element has been uninstalled");
+                return;
+            }
+
+            var style = getState(element).style;
+            storeCurrentSize(element, style.width, style.height);
+            positionScrollbars(element, style.width, style.height);
+        }
+
+        function ready() {
+            callback(element);
+        }
+
+        function install() {
+            debug("Installing...");
+            initListeners();
+            storeStartSize();
+
+            batchProcessor.add(0, storeStyle);
+            batchProcessor.add(1, injectScrollElements);
+            batchProcessor.add(2, registerListenersAndPositionElements);
+            batchProcessor.add(3, finalizeDomMutation);
+            batchProcessor.add(4, ready);
+        }
+
+        debug("Making detectable...");
+
+        if (isDetached(element)) {
+            debug("Element is detached");
+
+            injectContainerElement();
+
+            debug("Waiting until element is attached...");
+
+            getState(element).onRendered = function () {
+                debug("Element is now attached");
+                install();
+            };
+        } else {
+            install();
+        }
+    }
+
+    function uninstall(element) {
+        var state = getState(element);
+
+        if (!state) {
+            // Uninstall has been called on a non-erd element.
+            return;
+        }
+
+        // Uninstall may have been called in the following scenarios:
+        // (1) Right between the sync code and async batch (here state.busy = true, but nothing have been registered or injected).
+        // (2) In the ready callback of the last level of the batch by another element (here, state.busy = true, but all the stuff has been injected).
+        // (3) After the installation process (here, state.busy = false and all the stuff has been injected).
+        // So to be on the safe side, let's check for each thing before removing.
+
+        // We need to remove the event listeners, because otherwise the event might fire on an uninstall element which results in an error when trying to get the state of the element.
+        state.onExpandScroll && removeEvent(getExpandElement(element), "scroll", state.onExpandScroll);
+        state.onShrinkScroll && removeEvent(getShrinkElement(element), "scroll", state.onShrinkScroll);
+        state.onAnimationStart && removeEvent(state.container, "animationstart", state.onAnimationStart);
+
+        state.container && element.removeChild(state.container);
+    }
+
+    return {
+        makeDetectable: makeDetectable,
+        addListener: addListener,
+        uninstall: uninstall
+    };
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/element-resize-detector.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var forEach                 = __webpack_require__("../../../../element-resize-detector/src/collection-utils.js").forEach;
+var elementUtilsMaker       = __webpack_require__("../../../../element-resize-detector/src/element-utils.js");
+var listenerHandlerMaker    = __webpack_require__("../../../../element-resize-detector/src/listener-handler.js");
+var idGeneratorMaker        = __webpack_require__("../../../../element-resize-detector/src/id-generator.js");
+var idHandlerMaker          = __webpack_require__("../../../../element-resize-detector/src/id-handler.js");
+var reporterMaker           = __webpack_require__("../../../../element-resize-detector/src/reporter.js");
+var browserDetector         = __webpack_require__("../../../../element-resize-detector/src/browser-detector.js");
+var batchProcessorMaker     = __webpack_require__("../../../../batch-processor/src/batch-processor.js");
+var stateHandler            = __webpack_require__("../../../../element-resize-detector/src/state-handler.js");
+
+//Detection strategies.
+var objectStrategyMaker     = __webpack_require__("../../../../element-resize-detector/src/detection-strategy/object.js");
+var scrollStrategyMaker     = __webpack_require__("../../../../element-resize-detector/src/detection-strategy/scroll.js");
+
+function isCollection(obj) {
+    return Array.isArray(obj) || obj.length !== undefined;
+}
+
+function toArray(collection) {
+    if (!Array.isArray(collection)) {
+        var array = [];
+        forEach(collection, function (obj) {
+            array.push(obj);
+        });
+        return array;
+    } else {
+        return collection;
+    }
+}
+
+function isElement(obj) {
+    return obj && obj.nodeType === 1;
+}
+
+/**
+ * @typedef idHandler
+ * @type {object}
+ * @property {function} get Gets the resize detector id of the element.
+ * @property {function} set Generate and sets the resize detector id of the element.
+ */
+
+/**
+ * @typedef Options
+ * @type {object}
+ * @property {boolean} callOnAdd    Determines if listeners should be called when they are getting added.
+                                    Default is true. If true, the listener is guaranteed to be called when it has been added.
+                                    If false, the listener will not be guarenteed to be called when it has been added (does not prevent it from being called).
+ * @property {idHandler} idHandler  A custom id handler that is responsible for generating, setting and retrieving id's for elements.
+                                    If not provided, a default id handler will be used.
+ * @property {reporter} reporter    A custom reporter that handles reporting logs, warnings and errors.
+                                    If not provided, a default id handler will be used.
+                                    If set to false, then nothing will be reported.
+ * @property {boolean} debug        If set to true, the the system will report debug messages as default for the listenTo method.
+ */
+
+/**
+ * Creates an element resize detector instance.
+ * @public
+ * @param {Options?} options Optional global options object that will decide how this instance will work.
+ */
+module.exports = function(options) {
+    options = options || {};
+
+    //idHandler is currently not an option to the listenTo function, so it should not be added to globalOptions.
+    var idHandler;
+
+    if (options.idHandler) {
+        // To maintain compatability with idHandler.get(element, readonly), make sure to wrap the given idHandler
+        // so that readonly flag always is true when it's used here. This may be removed next major version bump.
+        idHandler = {
+            get: function (element) { return options.idHandler.get(element, true); },
+            set: options.idHandler.set
+        };
+    } else {
+        var idGenerator = idGeneratorMaker();
+        var defaultIdHandler = idHandlerMaker({
+            idGenerator: idGenerator,
+            stateHandler: stateHandler
+        });
+        idHandler = defaultIdHandler;
+    }
+
+    //reporter is currently not an option to the listenTo function, so it should not be added to globalOptions.
+    var reporter = options.reporter;
+
+    if(!reporter) {
+        //If options.reporter is false, then the reporter should be quiet.
+        var quiet = reporter === false;
+        reporter = reporterMaker(quiet);
+    }
+
+    //batchProcessor is currently not an option to the listenTo function, so it should not be added to globalOptions.
+    var batchProcessor = getOption(options, "batchProcessor", batchProcessorMaker({ reporter: reporter }));
+
+    //Options to be used as default for the listenTo function.
+    var globalOptions = {};
+    globalOptions.callOnAdd     = !!getOption(options, "callOnAdd", true);
+    globalOptions.debug         = !!getOption(options, "debug", false);
+
+    var eventListenerHandler    = listenerHandlerMaker(idHandler);
+    var elementUtils            = elementUtilsMaker({
+        stateHandler: stateHandler
+    });
+
+    //The detection strategy to be used.
+    var detectionStrategy;
+    var desiredStrategy = getOption(options, "strategy", "object");
+    var strategyOptions = {
+        reporter: reporter,
+        batchProcessor: batchProcessor,
+        stateHandler: stateHandler,
+        idHandler: idHandler
+    };
+
+    if(desiredStrategy === "scroll") {
+        if (browserDetector.isLegacyOpera()) {
+            reporter.warn("Scroll strategy is not supported on legacy Opera. Changing to object strategy.");
+            desiredStrategy = "object";
+        } else if (browserDetector.isIE(9)) {
+            reporter.warn("Scroll strategy is not supported on IE9. Changing to object strategy.");
+            desiredStrategy = "object";
+        }
+    }
+
+    if(desiredStrategy === "scroll") {
+        detectionStrategy = scrollStrategyMaker(strategyOptions);
+    } else if(desiredStrategy === "object") {
+        detectionStrategy = objectStrategyMaker(strategyOptions);
+    } else {
+        throw new Error("Invalid strategy name: " + desiredStrategy);
+    }
+
+    //Calls can be made to listenTo with elements that are still being installed.
+    //Also, same elements can occur in the elements list in the listenTo function.
+    //With this map, the ready callbacks can be synchronized between the calls
+    //so that the ready callback can always be called when an element is ready - even if
+    //it wasn't installed from the function itself.
+    var onReadyCallbacks = {};
+
+    /**
+     * Makes the given elements resize-detectable and starts listening to resize events on the elements. Calls the event callback for each event for each element.
+     * @public
+     * @param {Options?} options Optional options object. These options will override the global options. Some options may not be overriden, such as idHandler.
+     * @param {element[]|element} elements The given array of elements to detect resize events of. Single element is also valid.
+     * @param {function} listener The callback to be executed for each resize event for each element.
+     */
+    function listenTo(options, elements, listener) {
+        function onResizeCallback(element) {
+            var listeners = eventListenerHandler.get(element);
+            forEach(listeners, function callListenerProxy(listener) {
+                listener(element);
+            });
+        }
+
+        function addListener(callOnAdd, element, listener) {
+            eventListenerHandler.add(element, listener);
+
+            if(callOnAdd) {
+                listener(element);
+            }
+        }
+
+        //Options object may be omitted.
+        if(!listener) {
+            listener = elements;
+            elements = options;
+            options = {};
+        }
+
+        if(!elements) {
+            throw new Error("At least one element required.");
+        }
+
+        if(!listener) {
+            throw new Error("Listener required.");
+        }
+
+        if (isElement(elements)) {
+            // A single element has been passed in.
+            elements = [elements];
+        } else if (isCollection(elements)) {
+            // Convert collection to array for plugins.
+            // TODO: May want to check so that all the elements in the collection are valid elements.
+            elements = toArray(elements);
+        } else {
+            return reporter.error("Invalid arguments. Must be a DOM element or a collection of DOM elements.");
+        }
+
+        var elementsReady = 0;
+
+        var callOnAdd = getOption(options, "callOnAdd", globalOptions.callOnAdd);
+        var onReadyCallback = getOption(options, "onReady", function noop() {});
+        var debug = getOption(options, "debug", globalOptions.debug);
+
+        forEach(elements, function attachListenerToElement(element) {
+            if (!stateHandler.getState(element)) {
+                stateHandler.initState(element);
+                idHandler.set(element);
+            }
+
+            var id = idHandler.get(element);
+
+            debug && reporter.log("Attaching listener to element", id, element);
+
+            if(!elementUtils.isDetectable(element)) {
+                debug && reporter.log(id, "Not detectable.");
+                if(elementUtils.isBusy(element)) {
+                    debug && reporter.log(id, "System busy making it detectable");
+
+                    //The element is being prepared to be detectable. Do not make it detectable.
+                    //Just add the listener, because the element will soon be detectable.
+                    addListener(callOnAdd, element, listener);
+                    onReadyCallbacks[id] = onReadyCallbacks[id] || [];
+                    onReadyCallbacks[id].push(function onReady() {
+                        elementsReady++;
+
+                        if(elementsReady === elements.length) {
+                            onReadyCallback();
+                        }
+                    });
+                    return;
+                }
+
+                debug && reporter.log(id, "Making detectable...");
+                //The element is not prepared to be detectable, so do prepare it and add a listener to it.
+                elementUtils.markBusy(element, true);
+                return detectionStrategy.makeDetectable({ debug: debug }, element, function onElementDetectable(element) {
+                    debug && reporter.log(id, "onElementDetectable");
+
+                    if (stateHandler.getState(element)) {
+                        elementUtils.markAsDetectable(element);
+                        elementUtils.markBusy(element, false);
+                        detectionStrategy.addListener(element, onResizeCallback);
+                        addListener(callOnAdd, element, listener);
+
+                        // Since the element size might have changed since the call to "listenTo", we need to check for this change,
+                        // so that a resize event may be emitted.
+                        // Having the startSize object is optional (since it does not make sense in some cases such as unrendered elements), so check for its existance before.
+                        // Also, check the state existance before since the element may have been uninstalled in the installation process.
+                        var state = stateHandler.getState(element);
+                        if (state && state.startSize) {
+                            var width = element.offsetWidth;
+                            var height = element.offsetHeight;
+                            if (state.startSize.width !== width || state.startSize.height !== height) {
+                                onResizeCallback(element);
+                            }
+                        }
+
+                        if(onReadyCallbacks[id]) {
+                            forEach(onReadyCallbacks[id], function(callback) {
+                                callback();
+                            });
+                        }
+                    } else {
+                        // The element has been unisntalled before being detectable.
+                        debug && reporter.log(id, "Element uninstalled before being detectable.");
+                    }
+
+                    delete onReadyCallbacks[id];
+
+                    elementsReady++;
+                    if(elementsReady === elements.length) {
+                        onReadyCallback();
+                    }
+                });
+            }
+
+            debug && reporter.log(id, "Already detecable, adding listener.");
+
+            //The element has been prepared to be detectable and is ready to be listened to.
+            addListener(callOnAdd, element, listener);
+            elementsReady++;
+        });
+
+        if(elementsReady === elements.length) {
+            onReadyCallback();
+        }
+    }
+
+    function uninstall(elements) {
+        if(!elements) {
+            return reporter.error("At least one element is required.");
+        }
+
+        if (isElement(elements)) {
+            // A single element has been passed in.
+            elements = [elements];
+        } else if (isCollection(elements)) {
+            // Convert collection to array for plugins.
+            // TODO: May want to check so that all the elements in the collection are valid elements.
+            elements = toArray(elements);
+        } else {
+            return reporter.error("Invalid arguments. Must be a DOM element or a collection of DOM elements.");
+        }
+
+        forEach(elements, function (element) {
+            eventListenerHandler.removeAllListeners(element);
+            detectionStrategy.uninstall(element);
+            stateHandler.cleanState(element);
+        });
+    }
+
+    return {
+        listenTo: listenTo,
+        removeListener: eventListenerHandler.removeListener,
+        removeAllListeners: eventListenerHandler.removeAllListeners,
+        uninstall: uninstall
+    };
+};
+
+function getOption(options, name, defaultValue) {
+    var value = options[name];
+
+    if((value === undefined || value === null) && defaultValue !== undefined) {
+        return defaultValue;
+    }
+
+    return value;
+}
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/element-utils.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = function(options) {
+    var getState = options.stateHandler.getState;
+
+    /**
+     * Tells if the element has been made detectable and ready to be listened for resize events.
+     * @public
+     * @param {element} The element to check.
+     * @returns {boolean} True or false depending on if the element is detectable or not.
+     */
+    function isDetectable(element) {
+        var state = getState(element);
+        return state && !!state.isDetectable;
+    }
+
+    /**
+     * Marks the element that it has been made detectable and ready to be listened for resize events.
+     * @public
+     * @param {element} The element to mark.
+     */
+    function markAsDetectable(element) {
+        getState(element).isDetectable = true;
+    }
+
+    /**
+     * Tells if the element is busy or not.
+     * @public
+     * @param {element} The element to check.
+     * @returns {boolean} True or false depending on if the element is busy or not.
+     */
+    function isBusy(element) {
+        return !!getState(element).busy;
+    }
+
+    /**
+     * Marks the object is busy and should not be made detectable.
+     * @public
+     * @param {element} element The element to mark.
+     * @param {boolean} busy If the element is busy or not.
+     */
+    function markBusy(element, busy) {
+        getState(element).busy = !!busy;
+    }
+
+    return {
+        isDetectable: isDetectable,
+        markAsDetectable: markAsDetectable,
+        isBusy: isBusy,
+        markBusy: markBusy
+    };
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/id-generator.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = function() {
+    var idCount = 1;
+
+    /**
+     * Generates a new unique id in the context.
+     * @public
+     * @returns {number} A unique id in the context.
+     */
+    function generate() {
+        return idCount++;
+    }
+
+    return {
+        generate: generate
+    };
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/id-handler.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = function(options) {
+    var idGenerator     = options.idGenerator;
+    var getState        = options.stateHandler.getState;
+
+    /**
+     * Gets the resize detector id of the element.
+     * @public
+     * @param {element} element The target element to get the id of.
+     * @returns {string|number|null} The id of the element. Null if it has no id.
+     */
+    function getId(element) {
+        var state = getState(element);
+
+        if (state && state.id !== undefined) {
+            return state.id;
+        }
+
+        return null;
+    }
+
+    /**
+     * Sets the resize detector id of the element. Requires the element to have a resize detector state initialized.
+     * @public
+     * @param {element} element The target element to set the id of.
+     * @returns {string|number|null} The id of the element.
+     */
+    function setId(element) {
+        var state = getState(element);
+
+        if (!state) {
+            throw new Error("setId required the element to have a resize detection state.");
+        }
+
+        var id = idGenerator.generate();
+
+        state.id = id;
+
+        return id;
+    }
+
+    return {
+        get: getId,
+        set: setId
+    };
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/listener-handler.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = function(idHandler) {
+    var eventListeners = {};
+
+    /**
+     * Gets all listeners for the given element.
+     * @public
+     * @param {element} element The element to get all listeners for.
+     * @returns All listeners for the given element.
+     */
+    function getListeners(element) {
+        var id = idHandler.get(element);
+
+        if (id === undefined) {
+            return [];
+        }
+
+        return eventListeners[id] || [];
+    }
+
+    /**
+     * Stores the given listener for the given element. Will not actually add the listener to the element.
+     * @public
+     * @param {element} element The element that should have the listener added.
+     * @param {function} listener The callback that the element has added.
+     */
+    function addListener(element, listener) {
+        var id = idHandler.get(element);
+
+        if(!eventListeners[id]) {
+            eventListeners[id] = [];
+        }
+
+        eventListeners[id].push(listener);
+    }
+
+    function removeListener(element, listener) {
+        var listeners = getListeners(element);
+        for (var i = 0, len = listeners.length; i < len; ++i) {
+            if (listeners[i] === listener) {
+              listeners.splice(i, 1);
+              break;
+            }
+        }
+    }
+
+    function removeAllListeners(element) {
+      var listeners = getListeners(element);
+      if (!listeners) { return; }
+      listeners.length = 0;
+    }
+
+    return {
+        get: getListeners,
+        add: addListener,
+        removeListener: removeListener,
+        removeAllListeners: removeAllListeners
+    };
+};
+
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/reporter.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+/* global console: false */
+
+/**
+ * Reporter that handles the reporting of logs, warnings and errors.
+ * @public
+ * @param {boolean} quiet Tells if the reporter should be quiet or not.
+ */
+module.exports = function(quiet) {
+    function noop() {
+        //Does nothing.
+    }
+
+    var reporter = {
+        log: noop,
+        warn: noop,
+        error: noop
+    };
+
+    if(!quiet && window.console) {
+        var attachFunction = function(reporter, name) {
+            //The proxy is needed to be able to call the method with the console context,
+            //since we cannot use bind.
+            reporter[name] = function reporterProxy() {
+                var f = console[name];
+                if (f.apply) { //IE9 does not support console.log.apply :)
+                    f.apply(console, arguments);
+                } else {
+                    for (var i = 0; i < arguments.length; i++) {
+                        f(arguments[i]);
+                    }
+                }
+            };
+        };
+
+        attachFunction(reporter, "log");
+        attachFunction(reporter, "warn");
+        attachFunction(reporter, "error");
+    }
+
+    return reporter;
+};
+
+/***/ }),
+
+/***/ "../../../../element-resize-detector/src/state-handler.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var prop = "_erd";
+
+function initState(element) {
+    element[prop] = {};
+    return getState(element);
+}
+
+function getState(element) {
+    return element[prop];
+}
+
+function cleanState(element) {
+    delete element[prop];
+}
+
+module.exports = {
+    initState: initState,
+    getState: getState,
+    cleanState: cleanState
+};
 
 
 /***/ }),
@@ -2521,6 +4259,2217 @@ ToastModule.decorators = [
 ToastModule.ctorParameters = function () { return []; };
 exports.ToastModule = ToastModule;
 //# sourceMappingURL=toast.module.js.map
+
+/***/ }),
+
+/***/ "../../../../ngx-perfect-scrollbar/dist/index.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var index_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/index.js");
+exports.PerfectScrollbarComponent = index_1.PerfectScrollbarComponent;
+exports.PerfectScrollbarDirective = index_1.PerfectScrollbarDirective;
+exports.PerfectScrollbarConfig = index_1.PerfectScrollbarConfig;
+exports.provideDefaultConfig = index_1.provideDefaultConfig;
+exports.provideForRootGuard = index_1.provideForRootGuard;
+exports.PERFECT_SCROLLBAR_GUARD = index_1.PERFECT_SCROLLBAR_GUARD;
+exports.PERFECT_SCROLLBAR_CONFIG = index_1.PERFECT_SCROLLBAR_CONFIG;
+exports.PerfectScrollbarModule = index_1.PerfectScrollbarModule;
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ "../../../../ngx-perfect-scrollbar/dist/lib/index.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var perfect_scrollbar_component_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.component.js");
+exports.PerfectScrollbarComponent = perfect_scrollbar_component_1.PerfectScrollbarComponent;
+var perfect_scrollbar_directive_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.directive.js");
+exports.PerfectScrollbarDirective = perfect_scrollbar_directive_1.PerfectScrollbarDirective;
+var perfect_scrollbar_interfaces_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.interfaces.js");
+exports.PerfectScrollbarConfig = perfect_scrollbar_interfaces_1.PerfectScrollbarConfig;
+var perfect_scrollbar_module_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.module.js");
+exports.provideDefaultConfig = perfect_scrollbar_module_1.provideDefaultConfig;
+exports.provideForRootGuard = perfect_scrollbar_module_1.provideForRootGuard;
+exports.PERFECT_SCROLLBAR_GUARD = perfect_scrollbar_module_1.PERFECT_SCROLLBAR_GUARD;
+exports.PERFECT_SCROLLBAR_CONFIG = perfect_scrollbar_module_1.PERFECT_SCROLLBAR_CONFIG;
+exports.PerfectScrollbarModule = perfect_scrollbar_module_1.PerfectScrollbarModule;
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ "../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.component.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+__webpack_require__("../../../../rxjs/add/operator/throttleTime.js");
+__webpack_require__("../../../../rxjs/add/operator/distinctUntilChanged.js");
+var Subject_1 = __webpack_require__("../../../../rxjs/Subject.js");
+var core_1 = __webpack_require__("../../../core/@angular/core.es5.js");
+var core_2 = __webpack_require__("../../../core/@angular/core.es5.js");
+var core_3 = __webpack_require__("../../../core/@angular/core.es5.js");
+var perfect_scrollbar_directive_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.directive.js");
+var PerfectScrollbarComponent = (function () {
+    function PerfectScrollbarComponent(elementRef, cdRef) {
+        this.elementRef = elementRef;
+        this.cdRef = cdRef;
+        this.states = {};
+        this.notify = null;
+        this.userInteraction = false;
+        this.allowPropagation = false;
+        this.cancelEvent = null;
+        this.timeoutState = null;
+        this.timeoutScroll = null;
+        this.usePropagationX = false;
+        this.usePropagationY = false;
+        this.scrollSub = null;
+        this.scrollUpdate = new Subject_1.Subject();
+        this.statesSub = null;
+        this.statesUpdate = new Subject_1.Subject();
+        this.activeSub = null;
+        this.activeUpdate = new Subject_1.Subject();
+        this.hidden = false;
+        this.disabled = false;
+        this.usePSClass = true;
+        this.autoPropagation = false;
+        this.scrollIndicators = false;
+        this.runInsideAngular = false;
+    }
+    PerfectScrollbarComponent.prototype.onGeneratedEvent = function (event) {
+        // Stop the generated event from reaching window for PS to work correctly
+        if (event['psGenerated']) {
+            event.stopPropagation();
+        }
+    };
+    PerfectScrollbarComponent.prototype.ngOnInit = function () {
+        var _this = this;
+        this.activeSub = this.activeUpdate
+            .distinctUntilChanged()
+            .subscribe(function (active) {
+            _this.allowPropagation = active;
+        });
+        this.scrollSub = this.scrollUpdate
+            .throttleTime(100)
+            .subscribe(function (state) {
+            window.clearTimeout(_this.timeoutScroll);
+            _this.elementRef.nativeElement.classList.add('ps-scrolling');
+            _this.timeoutScroll = window.setTimeout(function () {
+                _this.elementRef.nativeElement.classList.remove('ps-scrolling');
+            }, 500);
+        });
+        this.statesSub = this.statesUpdate
+            .distinctUntilChanged()
+            .subscribe(function (state) {
+            window.clearTimeout(_this.timeoutState);
+            if (state !== 'x' && state !== 'y') {
+                _this.notify = true;
+                _this.states[state] = true;
+                _this.timeoutState = window.setTimeout(function () {
+                    _this.notify = false;
+                    if (_this.autoPropagation && _this.userInteraction &&
+                        ((!_this.usePropagationX && (_this.states.left || _this.states.right)) ||
+                            (!_this.usePropagationY && (_this.states.top || _this.states.bottom)))) {
+                        _this.allowPropagation = true;
+                    }
+                    _this.cdRef.markForCheck();
+                }, 300);
+            }
+            else {
+                _this.notify = false;
+                if (state === 'x') {
+                    _this.states.left = false;
+                    _this.states.right = false;
+                }
+                else if (state === 'y') {
+                    _this.states.top = false;
+                    _this.states.bottom = false;
+                }
+                _this.userInteraction = true;
+                if (_this.autoPropagation &&
+                    (!_this.usePropagationX || !_this.usePropagationY)) {
+                    _this.allowPropagation = false;
+                    if (_this.cancelEvent) {
+                        _this.elementRef.nativeElement.dispatchEvent(_this.cancelEvent);
+                        _this.cancelEvent = null;
+                    }
+                }
+                else if (_this.scrollIndicators) {
+                    _this.notify = true;
+                    _this.timeoutState = window.setTimeout(function () {
+                        _this.notify = false;
+                        _this.cdRef.markForCheck();
+                    }, 300);
+                }
+            }
+            _this.cdRef.markForCheck();
+        });
+    };
+    PerfectScrollbarComponent.prototype.ngOnDestroy = function () {
+        if (this.activeSub) {
+            this.activeSub.unsubscribe();
+        }
+        if (this.scrollSub) {
+            this.scrollSub.unsubscribe();
+        }
+        if (this.statesSub) {
+            this.statesSub.unsubscribe();
+        }
+        window.clearTimeout(this.timeoutState);
+        window.clearTimeout(this.timeoutScroll);
+    };
+    PerfectScrollbarComponent.prototype.ngDoCheck = function () {
+        if (!this.disabled && this.autoPropagation && this.directiveRef) {
+            var element = this.directiveRef.elementRef.nativeElement;
+            this.usePropagationX = !element.classList.contains('ps--active-x');
+            this.usePropagationY = !element.classList.contains('ps--active-y');
+            this.activeUpdate.next(this.usePropagationX && this.usePropagationY);
+        }
+    };
+    PerfectScrollbarComponent.prototype.getConfig = function () {
+        var config = this.config || {};
+        if (this.autoPropagation) {
+            config.swipePropagation = true;
+            config.wheelPropagation = true;
+        }
+        return config;
+    };
+    PerfectScrollbarComponent.prototype.update = function () {
+        console.warn('Deprecated function, update needs to be called through directiveRef!');
+        this.directiveRef.update();
+    };
+    PerfectScrollbarComponent.prototype.scrollTo = function (x, y) {
+        console.warn('Deprecated function, scrollTo needs to be called through directiveRef!');
+        this.directiveRef.scrollTo(x, y);
+    };
+    PerfectScrollbarComponent.prototype.scrollToTop = function (offset) {
+        if (offset === void 0) { offset = 0; }
+        console.warn('Deprecated function, scrollToTop needs to be called through directiveRef!');
+        this.directiveRef.scrollToTop(offset);
+    };
+    PerfectScrollbarComponent.prototype.scrollToLeft = function (offset) {
+        if (offset === void 0) { offset = 0; }
+        console.warn('Deprecated function, scrollToLeft needs to be called through directiveRef!');
+        this.directiveRef.scrollToLeft(offset);
+    };
+    PerfectScrollbarComponent.prototype.scrollToRight = function (offset) {
+        if (offset === void 0) { offset = 0; }
+        console.warn('Deprecated function, scrollToRight needs to be called through directiveRef!');
+        this.directiveRef.scrollToRight(offset);
+    };
+    PerfectScrollbarComponent.prototype.scrollToBottom = function (offset) {
+        if (offset === void 0) { offset = 0; }
+        console.warn('Deprecated function, scrollToBottom needs to be called through directiveRef!');
+        this.directiveRef.scrollToBottom(offset);
+    };
+    PerfectScrollbarComponent.prototype.onTouchEnd = function (event) {
+        if (event === void 0) { event = null; }
+        if (!this.disabled && this.autoPropagation) {
+            if (!this.usePropagationX || !this.usePropagationY) {
+                this.cancelEvent = null;
+                this.allowPropagation = false;
+            }
+        }
+    };
+    PerfectScrollbarComponent.prototype.onTouchMove = function (event) {
+        if (event === void 0) { event = null; }
+        if (!this.disabled && this.autoPropagation) {
+            if (!this.allowPropagation) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        }
+    };
+    PerfectScrollbarComponent.prototype.onTouchStart = function (event) {
+        if (event === void 0) { event = null; }
+        if (!this.disabled && this.autoPropagation) {
+            this.userInteraction = true;
+            if (this.allowPropagation) {
+                // PS stops the touchmove event so lets re-emit it here
+                if (this.elementRef.nativeElement) {
+                    var newEvent = new MouseEvent('touchstart', event);
+                    this.cancelEvent = new MouseEvent('touchmove', event);
+                    newEvent['psGenerated'] = this.cancelEvent['psGenerated'] = true;
+                    newEvent['touches'] = this.cancelEvent['touches'] = event['touches'];
+                    newEvent['targetTouches'] = this.cancelEvent['targetTouches'] = event['targetTouches'];
+                    this.elementRef.nativeElement.dispatchEvent(newEvent);
+                }
+            }
+            this.cdRef.detectChanges();
+        }
+    };
+    PerfectScrollbarComponent.prototype.onWheelEvent = function (event) {
+        if (event === void 0) { event = null; }
+        if (!this.disabled && this.autoPropagation) {
+            this.userInteraction = true;
+            if (!this.allowPropagation) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            else if (!this.usePropagationX || !this.usePropagationY) {
+                this.allowPropagation = false;
+            }
+            this.cdRef.detectChanges();
+        }
+    };
+    PerfectScrollbarComponent.prototype.onScrollEvent = function (event, state) {
+        if (event === void 0) { event = null; }
+        if (event.currentTarget === event.target) {
+            this.scrollUpdate.next(state);
+            if (!this.disabled && (this.autoPropagation || this.scrollIndicators)) {
+                this.statesUpdate.next(state);
+            }
+        }
+    };
+    return PerfectScrollbarComponent;
+}());
+PerfectScrollbarComponent.decorators = [
+    { type: core_1.Component, args: [{
+                selector: 'perfect-scrollbar',
+                template: '<div #ps="ngxPerfectScrollbar" [perfectScrollbar]="getConfig()" [disabled]="disabled" [usePSClass]="usePSClass" [psPosStyle]="null" [runInsideAngular]="runInsideAngular" (wheel)="onWheelEvent($event)" (touchstart)="onTouchStart($event)" (touchmove)="onTouchMove($event)" (touchend)="onTouchEnd($event)" (ps-scroll-x)="onScrollEvent($event, \'x\')" (ps-scroll-y)="onScrollEvent($event, \'y\')" (ps-x-reach-end)="onScrollEvent($event, \'right\')" (ps-y-reach-end)="onScrollEvent($event, \'bottom\')" (ps-x-reach-start)="onScrollEvent($event, \'left\')" (ps-y-reach-start)="onScrollEvent($event, \'top\')"><div class="ps-content"><ng-content></ng-content></div><div *ngIf="autoPropagation || scrollIndicators" class="ps-overlay" [class.ps-at-top]="states.top" [class.ps-at-left]="states.left" [class.ps-at-right]="states.right" [class.ps-at-bottom]="states.bottom"><div class="ps-indicator-top" [class.ps-notify]="notify && userInteraction"></div><div class="ps-indicator-left" [class.ps-notify]="notify && userInteraction"></div><div class="ps-indicator-right" [class.ps-notify]="notify && userInteraction"></div><div class="ps-indicator-bottom" [class.ps-notify]="notify && userInteraction"></div></div></div>',
+                styles: ['.ps{-ms-touch-action:auto;touch-action:auto;overflow:hidden!important;-ms-overflow-style:none}@supports (-ms-overflow-style:none){.ps{overflow:auto!important}}@media screen and (-ms-high-contrast:active),(-ms-high-contrast:none){.ps{overflow:auto!important}}.ps.ps--active-x>.ps__scrollbar-x-rail,.ps.ps--active-y>.ps__scrollbar-y-rail{display:block;background-color:transparent}.ps.ps--in-scrolling.ps--x>.ps__scrollbar-x-rail{background-color:#eee;opacity:.9}.ps.ps--in-scrolling.ps--x>.ps__scrollbar-x-rail>.ps__scrollbar-x{background-color:#999;height:11px}.ps.ps--in-scrolling.ps--y>.ps__scrollbar-y-rail{background-color:#eee;opacity:.9}.ps.ps--in-scrolling.ps--y>.ps__scrollbar-y-rail>.ps__scrollbar-y{background-color:#999;width:11px}.ps>.ps__scrollbar-x-rail{display:none;position:absolute;opacity:0;-webkit-transition:background-color .2s linear,opacity .2s linear;-o-transition:background-color .2s linear,opacity .2s linear;-moz-transition:background-color .2s linear,opacity .2s linear;transition:background-color .2s linear,opacity .2s linear;bottom:0;height:15px}.ps>.ps__scrollbar-x-rail>.ps__scrollbar-x{position:absolute;background-color:#aaa;-webkit-border-radius:6px;-moz-border-radius:6px;border-radius:6px;-webkit-transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,-webkit-border-radius .2s ease-in-out;-o-transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out;-moz-transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out,-moz-border-radius .2s ease-in-out;transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out;transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out,-webkit-border-radius .2s ease-in-out,-moz-border-radius .2s ease-in-out;bottom:2px;height:6px}.ps>.ps__scrollbar-x-rail:active>.ps__scrollbar-x,.ps>.ps__scrollbar-x-rail:hover>.ps__scrollbar-x{height:11px}.ps>.ps__scrollbar-y-rail{display:none;position:absolute;opacity:0;-webkit-transition:background-color .2s linear,opacity .2s linear;-o-transition:background-color .2s linear,opacity .2s linear;-moz-transition:background-color .2s linear,opacity .2s linear;transition:background-color .2s linear,opacity .2s linear;right:0;width:15px}.ps>.ps__scrollbar-y-rail>.ps__scrollbar-y{position:absolute;background-color:#aaa;-webkit-border-radius:6px;-moz-border-radius:6px;border-radius:6px;-webkit-transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,-webkit-border-radius .2s ease-in-out;-o-transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out;-moz-transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out,-moz-border-radius .2s ease-in-out;transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out;transition:background-color .2s linear,height .2s linear,width .2s ease-in-out,border-radius .2s ease-in-out,-webkit-border-radius .2s ease-in-out,-moz-border-radius .2s ease-in-out;right:2px;width:6px}.ps>.ps__scrollbar-y-rail:active>.ps__scrollbar-y,.ps>.ps__scrollbar-y-rail:hover>.ps__scrollbar-y{width:11px}.ps:hover.ps--in-scrolling.ps--x>.ps__scrollbar-x-rail{background-color:#eee;opacity:.9}.ps:hover.ps--in-scrolling.ps--x>.ps__scrollbar-x-rail>.ps__scrollbar-x{background-color:#999;height:11px}.ps:hover.ps--in-scrolling.ps--y>.ps__scrollbar-y-rail{background-color:#eee;opacity:.9}.ps:hover.ps--in-scrolling.ps--y>.ps__scrollbar-y-rail>.ps__scrollbar-y{background-color:#999;width:11px}.ps:hover>.ps__scrollbar-x-rail,.ps:hover>.ps__scrollbar-y-rail{opacity:.6}.ps:hover>.ps__scrollbar-x-rail:hover{background-color:#eee;opacity:.9}.ps:hover>.ps__scrollbar-x-rail:hover>.ps__scrollbar-x{background-color:#999}.ps:hover>.ps__scrollbar-y-rail:hover{background-color:#eee;opacity:.9}.ps:hover>.ps__scrollbar-y-rail:hover>.ps__scrollbar-y{background-color:#999}perfect-scrollbar{position:relative;display:block;height:100%}perfect-scrollbar[hidden]{display:none}perfect-scrollbar[fxflex],perfect-scrollbar[fxflexfill],perfect-scrollbar[fxlayout]{display:flex;flex-direction:inherit;-webkit-box-orient:inherit;-webkit-box-direction:inherit;height:auto;min-width:0;min-height:0}perfect-scrollbar[fxflex]>.ps,perfect-scrollbar[fxflex]>.ps>.ps-content,perfect-scrollbar[fxflexfill]>.ps,perfect-scrollbar[fxflexfill]>.ps>.ps-content,perfect-scrollbar[fxlayout]>.ps,perfect-scrollbar[fxlayout]>.ps>.ps-content{display:flex;flex:1 1 auto;-webkit-box-flex:1;-ms-flex:1 1 auto;flex-direction:inherit;-webkit-box-orient:inherit;-webkit-box-direction:inherit;width:auto;height:auto;min-width:0;min-height:0}perfect-scrollbar>.ps{position:static;display:block;width:100%;height:100%}perfect-scrollbar>.ps>.ps-overlay{position:absolute;top:0;right:0;bottom:0;left:0;display:block;overflow:hidden;pointer-events:none}perfect-scrollbar>.ps>.ps-overlay .ps-indicator-bottom,perfect-scrollbar>.ps>.ps-overlay .ps-indicator-left,perfect-scrollbar>.ps>.ps-overlay .ps-indicator-right,perfect-scrollbar>.ps>.ps-overlay .ps-indicator-top{position:absolute;opacity:0;transition:opacity .3s ease-in-out}perfect-scrollbar>.ps>.ps-overlay .ps-indicator-bottom,perfect-scrollbar>.ps>.ps-overlay .ps-indicator-top{left:0;min-width:100%;min-height:24px}perfect-scrollbar>.ps>.ps-overlay .ps-indicator-left,perfect-scrollbar>.ps>.ps-overlay .ps-indicator-right{top:0;min-width:24px;min-height:100%}perfect-scrollbar>.ps>.ps-overlay .ps-indicator-top{top:0}perfect-scrollbar>.ps>.ps-overlay .ps-indicator-left{left:0}perfect-scrollbar>.ps>.ps-overlay .ps-indicator-right{right:0}perfect-scrollbar>.ps>.ps-overlay .ps-indicator-bottom{bottom:0}perfect-scrollbar>.ps.ps--active-y>.ps__scrollbar-y-rail{top:0!important;right:0!important}perfect-scrollbar>.ps.ps--active-x>.ps__scrollbar-x-rail{bottom:0!important;left:0!important}perfect-scrollbar>.ps.ps--active-y.ps--active-x>.ps__scrollbar-y-rail{margin:0 0 8px}perfect-scrollbar>.ps.ps--active-y.ps--active-x>.ps__scrollbar-x-rail{margin:0 8px 0 0}perfect-scrollbar.ps-scrolling>.ps.ps--active-x>.ps__scrollbar-x-rail,perfect-scrollbar.ps-scrolling>.ps.ps--active-y>.ps__scrollbar-y-rail{opacity:.9}perfect-scrollbar.ps-spacing-sm,perfect-scrollbar.ps-spacing-tn,perfect-scrollbar.ps-spacing-xs{padding:0 12px 12px 0;margin:0 -12px -12px 0}perfect-scrollbar.ps-spacing-sm>.ps>.ps-overlay,perfect-scrollbar.ps-spacing-tn>.ps>.ps-overlay,perfect-scrollbar.ps-spacing-xs>.ps>.ps-overlay{right:12px;bottom:12px}perfect-scrollbar.ps-spacing-lg,perfect-scrollbar.ps-spacing-md,perfect-scrollbar.ps-spacing-xl{padding:0 24px 24px 0;margin:0 -24px -24px 0}perfect-scrollbar.ps-spacing-lg>.ps>.ps-overlay,perfect-scrollbar.ps-spacing-md>.ps>.ps-overlay,perfect-scrollbar.ps-spacing-xl>.ps>.ps-overlay{right:24px;bottom:24px}perfect-scrollbar.ps-show-active>.ps.ps--active-y>.ps-overlay:not(.ps-at-top) .ps-indicator-top{opacity:1;background:linear-gradient(to bottom,rgba(255,255,255,.5) 0,rgba(255,255,255,0) 100%)}perfect-scrollbar.ps-show-active>.ps.ps--active-y>.ps-overlay:not(.ps-at-bottom) .ps-indicator-bottom{opacity:1;background:linear-gradient(to top,rgba(255,255,255,.5) 0,rgba(255,255,255,0) 100%)}perfect-scrollbar.ps-show-active>.ps.ps--active-x>.ps-overlay:not(.ps-at-left) .ps-indicator-left{opacity:1;background:linear-gradient(to right,rgba(255,255,255,.5) 0,rgba(255,255,255,0) 100%)}perfect-scrollbar.ps-show-active>.ps.ps--active-x>.ps-overlay:not(.ps-at-right) .ps-indicator-right{opacity:1;background:linear-gradient(to left,rgba(255,255,255,.5) 0,rgba(255,255,255,0) 100%)}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-y>.ps-overlay.ps-at-top .ps-indicator-top{background:linear-gradient(to bottom,rgba(170,170,170,.5) 0,rgba(170,170,170,0) 100%)}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-y>.ps-overlay.ps-at-top .ps-indicator-top.ps-notify{opacity:1}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-y>.ps-overlay.ps-at-bottom .ps-indicator-bottom{background:linear-gradient(to top,rgba(170,170,170,.5) 0,rgba(170,170,170,0) 100%)}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-y>.ps-overlay.ps-at-bottom .ps-indicator-bottom.ps-notify{opacity:1}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-x>.ps-overlay.ps-at-left .ps-indicator-left{background:linear-gradient(to right,rgba(170,170,170,.5) 0,rgba(170,170,170,0) 100%)}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-x>.ps-overlay.ps-at-left .ps-indicator-left.ps-notify{opacity:1}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-x>.ps-overlay.ps-at-right .ps-indicator-right{background:linear-gradient(to left,rgba(170,170,170,.5) 0,rgba(170,170,170,0) 100%)}perfect-scrollbar.ps-show-active.ps-show-limits>.ps.ps--active-x>.ps-overlay.ps-at-right .ps-indicator-right.ps-notify{opacity:1}'],
+                encapsulation: core_3.ViewEncapsulation.None
+            },] },
+];
+/** @nocollapse */
+PerfectScrollbarComponent.ctorParameters = function () { return [
+    { type: core_3.ElementRef, },
+    { type: core_3.ChangeDetectorRef, },
+]; };
+PerfectScrollbarComponent.propDecorators = {
+    'hidden': [{ type: core_2.HostBinding, args: ['hidden',] }, { type: core_2.Input },],
+    'disabled': [{ type: core_2.Input },],
+    'usePSClass': [{ type: core_2.Input },],
+    'autoPropagation': [{ type: core_2.HostBinding, args: ['class.ps-show-limits',] }, { type: core_2.Input },],
+    'scrollIndicators': [{ type: core_2.HostBinding, args: ['class.ps-show-active',] }, { type: core_2.Input },],
+    'runInsideAngular': [{ type: core_2.Input },],
+    'config': [{ type: core_2.Input },],
+    'directiveRef': [{ type: core_2.ViewChild, args: [perfect_scrollbar_directive_1.PerfectScrollbarDirective,] },],
+    'onGeneratedEvent': [{ type: core_2.HostListener, args: ['document:touchstart', ['$event'],] },],
+};
+exports.PerfectScrollbarComponent = PerfectScrollbarComponent;
+//# sourceMappingURL=perfect-scrollbar.component.js.map
+
+/***/ }),
+
+/***/ "../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.directive.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var Ps = __webpack_require__("../../../../perfect-scrollbar/index.js");
+var core_1 = __webpack_require__("../../../core/@angular/core.es5.js");
+var core_2 = __webpack_require__("../../../core/@angular/core.es5.js");
+var core_3 = __webpack_require__("../../../core/@angular/core.es5.js");
+var perfect_scrollbar_interfaces_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.interfaces.js");
+var elementResizeDetector = __webpack_require__("../../../../element-resize-detector/src/element-resize-detector.js");
+var PerfectScrollbarDirective = (function () {
+    function PerfectScrollbarDirective(defaults, zone, elementRef, differs) {
+        this.defaults = defaults;
+        this.zone = zone;
+        this.elementRef = elementRef;
+        this.differs = differs;
+        this.hidden = false;
+        this.disabled = false;
+        this.usePSClass = true;
+        this.psPosStyle = 'relative';
+        this.runInsideAngular = false;
+    }
+    Object.defineProperty(PerfectScrollbarDirective.prototype, "oldConfig", {
+        set: function (config) {
+            console.warn('Deprecated use of perfect-scrollbar selector, use perfectScrollbar instead!');
+            this.config = config;
+        },
+        enumerable: true,
+        configurable: true
+    });
+    PerfectScrollbarDirective.prototype.onResize = function ($event) {
+        this.update();
+    };
+    PerfectScrollbarDirective.prototype.ngOnInit = function () {
+        var _this = this;
+        var observer = elementResizeDetector({ strategy: 'scroll' });
+        if (this.elementRef.nativeElement.children.length) {
+            observer.listenTo(this.elementRef.nativeElement.children[0], function (element) {
+                _this.update();
+            });
+        }
+    };
+    PerfectScrollbarDirective.prototype.ngOnDestroy = function () {
+        var _this = this;
+        if (this.runInsideAngular) {
+            Ps.destroy(this.elementRef.nativeElement);
+        }
+        else {
+            this.zone.runOutsideAngular(function () {
+                Ps.destroy(_this.elementRef.nativeElement);
+            });
+        }
+    };
+    PerfectScrollbarDirective.prototype.ngDoCheck = function () {
+        var _this = this;
+        if (!this.disabled && this.configDiff) {
+            var changes = this.configDiff.diff(this.config || {});
+            if (changes) {
+                this.ngOnDestroy();
+                // Timeout is needed for the styles to update properly
+                setTimeout(function () {
+                    _this.ngAfterViewInit();
+                }, 0);
+            }
+        }
+    };
+    PerfectScrollbarDirective.prototype.ngOnChanges = function (changes) {
+        if (!this.disabled && this.configDiff) {
+            if (changes['hidden'] && !this.hidden) {
+                this.update();
+            }
+            if (changes['disabled'] && !this.disabled) {
+                this.ngOnDestroy();
+            }
+        }
+    };
+    PerfectScrollbarDirective.prototype.ngAfterViewInit = function () {
+        var _this = this;
+        if (!this.disabled) {
+            var config_1 = new perfect_scrollbar_interfaces_1.PerfectScrollbarConfig(this.defaults);
+            config_1.assign(this.config);
+            if (this.runInsideAngular) {
+                Ps.initialize(this.elementRef.nativeElement, config_1);
+            }
+            else {
+                this.zone.runOutsideAngular(function () {
+                    Ps.initialize(_this.elementRef.nativeElement, config_1);
+                });
+            }
+            if (!this.configDiff) {
+                this.configDiff = this.differs.find(this.config || {}).create(null);
+            }
+        }
+    };
+    PerfectScrollbarDirective.prototype.update = function () {
+        var _this = this;
+        setTimeout(function () {
+            if (!_this.disabled) {
+                if (_this.runInsideAngular) {
+                    Ps.update(_this.elementRef.nativeElement);
+                }
+                else {
+                    _this.zone.runOutsideAngular(function () {
+                        Ps.update(_this.elementRef.nativeElement);
+                    });
+                }
+            }
+        }, 0);
+    };
+    PerfectScrollbarDirective.prototype.geometry = function (property) {
+        if (property === void 0) { property = 'scroll'; }
+        return {
+            x: this.elementRef.nativeElement[property + 'Left'],
+            y: this.elementRef.nativeElement[property + 'Top'],
+            w: this.elementRef.nativeElement[property + 'Width'],
+            h: this.elementRef.nativeElement[property + 'Height']
+        };
+    };
+    PerfectScrollbarDirective.prototype.scrollTo = function (x, y, speed) {
+        if (!this.disabled) {
+            if (y == null && speed == null) {
+                console.warn('Deprecated use of scrollTo, use the scrollToY function instead!');
+                this.animateScrolling('scrollTop', x, speed);
+            }
+            else {
+                if (x != null) {
+                    this.animateScrolling('scrollLeft', x, speed);
+                }
+                if (y != null) {
+                    this.animateScrolling('scrollTop', y, speed);
+                }
+            }
+        }
+    };
+    PerfectScrollbarDirective.prototype.scrollToX = function (x, speed) {
+        this.animateScrolling('scrollLeft', x, speed);
+    };
+    PerfectScrollbarDirective.prototype.scrollToY = function (y, speed) {
+        this.animateScrolling('scrollTop', y, speed);
+    };
+    PerfectScrollbarDirective.prototype.scrollToTop = function (offset, speed) {
+        this.animateScrolling('scrollTop', (offset || 0), speed);
+    };
+    PerfectScrollbarDirective.prototype.scrollToLeft = function (offset, speed) {
+        this.animateScrolling('scrollLeft', (offset || 0), speed);
+    };
+    PerfectScrollbarDirective.prototype.scrollToRight = function (offset, speed) {
+        var width = this.elementRef.nativeElement.scrollWidth;
+        this.animateScrolling('scrollLeft', width - (offset || 0), speed);
+    };
+    PerfectScrollbarDirective.prototype.scrollToBottom = function (offset, speed) {
+        var height = this.elementRef.nativeElement.scrollHeight;
+        this.animateScrolling('scrollTop', height - (offset || 0), speed);
+    };
+    PerfectScrollbarDirective.prototype.animateScrolling = function (target, value, speed) {
+        var _this = this;
+        if (!speed) {
+            this.elementRef.nativeElement[target] = value;
+            // PS has weird event sending order, this is a workaround for that
+            this.update();
+            this.update();
+        }
+        else if (value !== this.elementRef.nativeElement[target]) {
+            var newValue_1 = 0;
+            var scrollCount_1 = 0;
+            var oldTimestamp_1 = performance.now();
+            var oldValue_1 = this.elementRef.nativeElement[target];
+            var cosParameter_1 = (oldValue_1 - value) / 2;
+            var step_1 = function (newTimestamp) {
+                scrollCount_1 += Math.PI / (speed / (newTimestamp - oldTimestamp_1));
+                newValue_1 = Math.round(value + cosParameter_1 + cosParameter_1 * Math.cos(scrollCount_1));
+                // Only continue animation if scroll position has not changed
+                if (_this.elementRef.nativeElement[target] === oldValue_1) {
+                    if (scrollCount_1 >= Math.PI) {
+                        _this.elementRef.nativeElement[target] = value;
+                        // PS has weird event sending order, this is a workaround for that
+                        _this.update();
+                        _this.update();
+                    }
+                    else {
+                        _this.elementRef.nativeElement[target] = oldValue_1 = newValue_1;
+                        oldTimestamp_1 = newTimestamp;
+                        window.requestAnimationFrame(step_1);
+                    }
+                }
+            };
+            window.requestAnimationFrame(step_1);
+        }
+    };
+    return PerfectScrollbarDirective;
+}());
+PerfectScrollbarDirective.decorators = [
+    { type: core_1.Directive, args: [{
+                selector: '[perfect-scrollbar], [perfectScrollbar]',
+                exportAs: 'ngxPerfectScrollbar'
+            },] },
+];
+/** @nocollapse */
+PerfectScrollbarDirective.ctorParameters = function () { return [
+    { type: perfect_scrollbar_interfaces_1.PerfectScrollbarConfig, decorators: [{ type: core_1.Optional },] },
+    { type: core_1.NgZone, },
+    { type: core_3.ElementRef, },
+    { type: core_2.KeyValueDiffers, },
+]; };
+PerfectScrollbarDirective.propDecorators = {
+    'hidden': [{ type: core_3.HostBinding, args: ['hidden',] }, { type: core_3.Input },],
+    'disabled': [{ type: core_3.Input },],
+    'usePSClass': [{ type: core_3.HostBinding, args: ['class.ps',] }, { type: core_3.Input },],
+    'psPosStyle': [{ type: core_3.HostBinding, args: ['style.position',] }, { type: core_3.Input },],
+    'runInsideAngular': [{ type: core_3.Input },],
+    'config': [{ type: core_3.Input, args: ['perfectScrollbar',] },],
+    'oldConfig': [{ type: core_3.Input, args: ['perfect-scrollbar',] },],
+    'onResize': [{ type: core_3.HostListener, args: ['window:resize', ['$event'],] },],
+};
+exports.PerfectScrollbarDirective = PerfectScrollbarDirective;
+//# sourceMappingURL=perfect-scrollbar.directive.js.map
+
+/***/ }),
+
+/***/ "../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.interfaces.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var PerfectScrollbarConfig = (function () {
+    function PerfectScrollbarConfig(config) {
+        if (config === void 0) { config = {}; }
+        this.assign(config);
+    }
+    PerfectScrollbarConfig.prototype.assign = function (config) {
+        if (config === void 0) { config = {}; }
+        for (var key in config) {
+            this[key] = config[key];
+        }
+    };
+    return PerfectScrollbarConfig;
+}());
+exports.PerfectScrollbarConfig = PerfectScrollbarConfig;
+//# sourceMappingURL=perfect-scrollbar.interfaces.js.map
+
+/***/ }),
+
+/***/ "../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.module.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var common_1 = __webpack_require__("../../../common/@angular/common.es5.js");
+var core_1 = __webpack_require__("../../../core/@angular/core.es5.js");
+var perfect_scrollbar_component_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.component.js");
+var perfect_scrollbar_directive_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.directive.js");
+var perfect_scrollbar_interfaces_1 = __webpack_require__("../../../../ngx-perfect-scrollbar/dist/lib/perfect-scrollbar.interfaces.js");
+exports.PERFECT_SCROLLBAR_GUARD = new core_1.OpaqueToken('PERFECT_SCROLLBAR_GUARD');
+exports.PERFECT_SCROLLBAR_CONFIG = new core_1.OpaqueToken('PERFECT_SCROLLBAR_CONFIG');
+var PerfectScrollbarModule = (function () {
+    function PerfectScrollbarModule(guard) {
+    }
+    PerfectScrollbarModule.forRoot = function (config) {
+        return {
+            ngModule: PerfectScrollbarModule,
+            providers: [
+                {
+                    provide: exports.PERFECT_SCROLLBAR_GUARD,
+                    useFactory: provideForRootGuard,
+                    deps: [
+                        [
+                            perfect_scrollbar_interfaces_1.PerfectScrollbarConfig,
+                            new core_1.Optional(),
+                            new core_1.SkipSelf()
+                        ]
+                    ]
+                },
+                {
+                    provide: exports.PERFECT_SCROLLBAR_CONFIG,
+                    useValue: config ? config : {}
+                },
+                {
+                    provide: perfect_scrollbar_interfaces_1.PerfectScrollbarConfig,
+                    useFactory: provideDefaultConfig,
+                    deps: [
+                        exports.PERFECT_SCROLLBAR_CONFIG
+                    ]
+                }
+            ]
+        };
+    };
+    PerfectScrollbarModule.forChild = function () {
+        return {
+            ngModule: PerfectScrollbarModule
+        };
+    };
+    return PerfectScrollbarModule;
+}());
+PerfectScrollbarModule.decorators = [
+    { type: core_1.NgModule, args: [{
+                imports: [common_1.CommonModule],
+                declarations: [perfect_scrollbar_component_1.PerfectScrollbarComponent, perfect_scrollbar_directive_1.PerfectScrollbarDirective],
+                exports: [common_1.CommonModule, perfect_scrollbar_component_1.PerfectScrollbarComponent, perfect_scrollbar_directive_1.PerfectScrollbarDirective]
+            },] },
+];
+/** @nocollapse */
+PerfectScrollbarModule.ctorParameters = function () { return [
+    { type: undefined, decorators: [{ type: core_1.Optional }, { type: core_1.Inject, args: [exports.PERFECT_SCROLLBAR_GUARD,] },] },
+]; };
+exports.PerfectScrollbarModule = PerfectScrollbarModule;
+function provideForRootGuard(config) {
+    if (config) {
+        throw new Error("\n      Application called PerfectScrollbarModule.forRoot() twice.\n      For submodules use PerfectScrollbarModule.forChild() instead.\n    ");
+    }
+    return 'guarded';
+}
+exports.provideForRootGuard = provideForRootGuard;
+function provideDefaultConfig(config) {
+    return new perfect_scrollbar_interfaces_1.PerfectScrollbarConfig(config);
+}
+exports.provideDefaultConfig = provideDefaultConfig;
+//# sourceMappingURL=perfect-scrollbar.module.js.map
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/index.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = __webpack_require__("../../../../perfect-scrollbar/src/js/main.js");
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/lib/dom.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var DOM = {};
+
+DOM.create = function (tagName, className) {
+  var element = document.createElement(tagName);
+  element.className = className;
+  return element;
+};
+
+DOM.appendTo = function (child, parent) {
+  parent.appendChild(child);
+  return child;
+};
+
+function cssGet(element, styleName) {
+  return window.getComputedStyle(element)[styleName];
+}
+
+function cssSet(element, styleName, styleValue) {
+  if (typeof styleValue === 'number') {
+    styleValue = styleValue.toString() + 'px';
+  }
+  element.style[styleName] = styleValue;
+  return element;
+}
+
+function cssMultiSet(element, obj) {
+  for (var key in obj) {
+    var val = obj[key];
+    if (typeof val === 'number') {
+      val = val.toString() + 'px';
+    }
+    element.style[key] = val;
+  }
+  return element;
+}
+
+DOM.css = function (element, styleNameOrObject, styleValue) {
+  if (typeof styleNameOrObject === 'object') {
+    // multiple set with object
+    return cssMultiSet(element, styleNameOrObject);
+  } else {
+    if (typeof styleValue === 'undefined') {
+      return cssGet(element, styleNameOrObject);
+    } else {
+      return cssSet(element, styleNameOrObject, styleValue);
+    }
+  }
+};
+
+DOM.matches = function (element, query) {
+  if (typeof element.matches !== 'undefined') {
+    return element.matches(query);
+  } else {
+    // must be IE11 and Edge
+    return element.msMatchesSelector(query);
+  }
+};
+
+DOM.remove = function (element) {
+  if (typeof element.remove !== 'undefined') {
+    element.remove();
+  } else {
+    if (element.parentNode) {
+      element.parentNode.removeChild(element);
+    }
+  }
+};
+
+DOM.queryChildren = function (element, selector) {
+  return Array.prototype.filter.call(element.childNodes, function (child) {
+    return DOM.matches(child, selector);
+  });
+};
+
+module.exports = DOM;
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/lib/event-manager.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var EventElement = function (element) {
+  this.element = element;
+  this.events = {};
+};
+
+EventElement.prototype.bind = function (eventName, handler) {
+  if (typeof this.events[eventName] === 'undefined') {
+    this.events[eventName] = [];
+  }
+  this.events[eventName].push(handler);
+  this.element.addEventListener(eventName, handler, false);
+};
+
+EventElement.prototype.unbind = function (eventName, handler) {
+  var isHandlerProvided = (typeof handler !== 'undefined');
+  this.events[eventName] = this.events[eventName].filter(function (hdlr) {
+    if (isHandlerProvided && hdlr !== handler) {
+      return true;
+    }
+    this.element.removeEventListener(eventName, hdlr, false);
+    return false;
+  }, this);
+};
+
+EventElement.prototype.unbindAll = function () {
+  for (var name in this.events) {
+    this.unbind(name);
+  }
+};
+
+var EventManager = function () {
+  this.eventElements = [];
+};
+
+EventManager.prototype.eventElement = function (element) {
+  var ee = this.eventElements.filter(function (eventElement) {
+    return eventElement.element === element;
+  })[0];
+  if (typeof ee === 'undefined') {
+    ee = new EventElement(element);
+    this.eventElements.push(ee);
+  }
+  return ee;
+};
+
+EventManager.prototype.bind = function (element, eventName, handler) {
+  this.eventElement(element).bind(eventName, handler);
+};
+
+EventManager.prototype.unbind = function (element, eventName, handler) {
+  this.eventElement(element).unbind(eventName, handler);
+};
+
+EventManager.prototype.unbindAll = function () {
+  for (var i = 0; i < this.eventElements.length; i++) {
+    this.eventElements[i].unbindAll();
+  }
+};
+
+EventManager.prototype.once = function (element, eventName, handler) {
+  var ee = this.eventElement(element);
+  var onceHandler = function (e) {
+    ee.unbind(eventName, onceHandler);
+    handler(e);
+  };
+  ee.bind(eventName, onceHandler);
+};
+
+module.exports = EventManager;
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/lib/guid.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = (function () {
+  function s4() {
+    return Math.floor((1 + Math.random()) * 0x10000)
+               .toString(16)
+               .substring(1);
+  }
+  return function () {
+    return s4() + s4() + '-' + s4() + '-' + s4() + '-' +
+           s4() + '-' + s4() + s4() + s4();
+  };
+})();
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/lib/helper.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var dom = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/dom.js");
+
+var toInt = exports.toInt = function (x) {
+  return parseInt(x, 10) || 0;
+};
+
+exports.isEditable = function (el) {
+  return dom.matches(el, "input,[contenteditable]") ||
+         dom.matches(el, "select,[contenteditable]") ||
+         dom.matches(el, "textarea,[contenteditable]") ||
+         dom.matches(el, "button,[contenteditable]");
+};
+
+exports.removePsClasses = function (element) {
+  for (var i = 0; i < element.classList.length; i++) {
+    var className = element.classList[i];
+    if (className.indexOf('ps-') === 0) {
+      element.classList.remove(className);
+    }
+  }
+};
+
+exports.outerWidth = function (element) {
+  return toInt(dom.css(element, 'width')) +
+         toInt(dom.css(element, 'paddingLeft')) +
+         toInt(dom.css(element, 'paddingRight')) +
+         toInt(dom.css(element, 'borderLeftWidth')) +
+         toInt(dom.css(element, 'borderRightWidth'));
+};
+
+function psClasses(axis) {
+  var classes = ['ps--in-scrolling'];
+  var axisClasses;
+  if (typeof axis === 'undefined') {
+    axisClasses = ['ps--x', 'ps--y'];
+  } else {
+    axisClasses = ['ps--' + axis];
+  }
+  return classes.concat(axisClasses);
+}
+
+exports.startScrolling = function (element, axis) {
+  var classes = psClasses(axis);
+  for (var i = 0; i < classes.length; i++) {
+    element.classList.add(classes[i]);
+  }
+};
+
+exports.stopScrolling = function (element, axis) {
+  var classes = psClasses(axis);
+  for (var i = 0; i < classes.length; i++) {
+    element.classList.remove(classes[i]);
+  }
+};
+
+exports.env = {
+  isWebKit: typeof document !== 'undefined' && 'WebkitAppearance' in document.documentElement.style,
+  supportsTouch: typeof window !== 'undefined' && (('ontouchstart' in window) || window.DocumentTouch && document instanceof window.DocumentTouch),
+  supportsIePointer: typeof window !== 'undefined' && window.navigator.msMaxTouchPoints !== null
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/main.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var destroy = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/destroy.js");
+var initialize = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/initialize.js");
+var update = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update.js");
+
+module.exports = {
+  initialize: initialize,
+  update: update,
+  destroy: destroy
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/default-setting.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+module.exports = function () {
+  return {
+    handlers: ['click-rail', 'drag-scrollbar', 'keyboard', 'wheel', 'touch'],
+    maxScrollbarLength: null,
+    minScrollbarLength: null,
+    scrollXMarginOffset: 0,
+    scrollYMarginOffset: 0,
+    suppressScrollX: false,
+    suppressScrollY: false,
+    swipePropagation: true,
+    swipeEasing: true,
+    useBothWheelAxes: false,
+    wheelPropagation: false,
+    wheelSpeed: 1,
+    theme: 'default'
+  };
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/destroy.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var dom = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/dom.js");
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+
+module.exports = function (element) {
+  var i = instances.get(element);
+
+  if (!i) {
+    return;
+  }
+
+  i.event.unbindAll();
+  dom.remove(i.scrollbarX);
+  dom.remove(i.scrollbarY);
+  dom.remove(i.scrollbarXRail);
+  dom.remove(i.scrollbarYRail);
+  _.removePsClasses(element);
+
+  instances.remove(element);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/handler/click-rail.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+function bindClickRailHandler(element, i) {
+  function pageOffset(el) {
+    return el.getBoundingClientRect();
+  }
+  var stopPropagation = function (e) { e.stopPropagation(); };
+
+  i.event.bind(i.scrollbarY, 'click', stopPropagation);
+  i.event.bind(i.scrollbarYRail, 'click', function (e) {
+    var positionTop = e.pageY - window.pageYOffset - pageOffset(i.scrollbarYRail).top;
+    var direction = positionTop > i.scrollbarYTop ? 1 : -1;
+
+    updateScroll(element, 'top', element.scrollTop + direction * i.containerHeight);
+    updateGeometry(element);
+
+    e.stopPropagation();
+  });
+
+  i.event.bind(i.scrollbarX, 'click', stopPropagation);
+  i.event.bind(i.scrollbarXRail, 'click', function (e) {
+    var positionLeft = e.pageX - window.pageXOffset - pageOffset(i.scrollbarXRail).left;
+    var direction = positionLeft > i.scrollbarXLeft ? 1 : -1;
+
+    updateScroll(element, 'left', element.scrollLeft + direction * i.containerWidth);
+    updateGeometry(element);
+
+    e.stopPropagation();
+  });
+}
+
+module.exports = function (element) {
+  var i = instances.get(element);
+  bindClickRailHandler(element, i);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/handler/drag-scrollbar.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var dom = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/dom.js");
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+function bindMouseScrollXHandler(element, i) {
+  var currentLeft = null;
+  var currentPageX = null;
+
+  function updateScrollLeft(deltaX) {
+    var newLeft = currentLeft + (deltaX * i.railXRatio);
+    var maxLeft = Math.max(0, i.scrollbarXRail.getBoundingClientRect().left) + (i.railXRatio * (i.railXWidth - i.scrollbarXWidth));
+
+    if (newLeft < 0) {
+      i.scrollbarXLeft = 0;
+    } else if (newLeft > maxLeft) {
+      i.scrollbarXLeft = maxLeft;
+    } else {
+      i.scrollbarXLeft = newLeft;
+    }
+
+    var scrollLeft = _.toInt(i.scrollbarXLeft * (i.contentWidth - i.containerWidth) / (i.containerWidth - (i.railXRatio * i.scrollbarXWidth))) - i.negativeScrollAdjustment;
+    updateScroll(element, 'left', scrollLeft);
+  }
+
+  var mouseMoveHandler = function (e) {
+    updateScrollLeft(e.pageX - currentPageX);
+    updateGeometry(element);
+    e.stopPropagation();
+    e.preventDefault();
+  };
+
+  var mouseUpHandler = function () {
+    _.stopScrolling(element, 'x');
+    i.event.unbind(i.ownerDocument, 'mousemove', mouseMoveHandler);
+  };
+
+  i.event.bind(i.scrollbarX, 'mousedown', function (e) {
+    currentPageX = e.pageX;
+    currentLeft = _.toInt(dom.css(i.scrollbarX, 'left')) * i.railXRatio;
+    _.startScrolling(element, 'x');
+
+    i.event.bind(i.ownerDocument, 'mousemove', mouseMoveHandler);
+    i.event.once(i.ownerDocument, 'mouseup', mouseUpHandler);
+
+    e.stopPropagation();
+    e.preventDefault();
+  });
+}
+
+function bindMouseScrollYHandler(element, i) {
+  var currentTop = null;
+  var currentPageY = null;
+
+  function updateScrollTop(deltaY) {
+    var newTop = currentTop + (deltaY * i.railYRatio);
+    var maxTop = Math.max(0, i.scrollbarYRail.getBoundingClientRect().top) + (i.railYRatio * (i.railYHeight - i.scrollbarYHeight));
+
+    if (newTop < 0) {
+      i.scrollbarYTop = 0;
+    } else if (newTop > maxTop) {
+      i.scrollbarYTop = maxTop;
+    } else {
+      i.scrollbarYTop = newTop;
+    }
+
+    var scrollTop = _.toInt(i.scrollbarYTop * (i.contentHeight - i.containerHeight) / (i.containerHeight - (i.railYRatio * i.scrollbarYHeight)));
+    updateScroll(element, 'top', scrollTop);
+  }
+
+  var mouseMoveHandler = function (e) {
+    updateScrollTop(e.pageY - currentPageY);
+    updateGeometry(element);
+    e.stopPropagation();
+    e.preventDefault();
+  };
+
+  var mouseUpHandler = function () {
+    _.stopScrolling(element, 'y');
+    i.event.unbind(i.ownerDocument, 'mousemove', mouseMoveHandler);
+  };
+
+  i.event.bind(i.scrollbarY, 'mousedown', function (e) {
+    currentPageY = e.pageY;
+    currentTop = _.toInt(dom.css(i.scrollbarY, 'top')) * i.railYRatio;
+    _.startScrolling(element, 'y');
+
+    i.event.bind(i.ownerDocument, 'mousemove', mouseMoveHandler);
+    i.event.once(i.ownerDocument, 'mouseup', mouseUpHandler);
+
+    e.stopPropagation();
+    e.preventDefault();
+  });
+}
+
+module.exports = function (element) {
+  var i = instances.get(element);
+  bindMouseScrollXHandler(element, i);
+  bindMouseScrollYHandler(element, i);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/handler/keyboard.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var dom = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/dom.js");
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+function bindKeyboardHandler(element, i) {
+  var hovered = false;
+  i.event.bind(element, 'mouseenter', function () {
+    hovered = true;
+  });
+  i.event.bind(element, 'mouseleave', function () {
+    hovered = false;
+  });
+
+  var shouldPrevent = false;
+  function shouldPreventDefault(deltaX, deltaY) {
+    var scrollTop = element.scrollTop;
+    if (deltaX === 0) {
+      if (!i.scrollbarYActive) {
+        return false;
+      }
+      if ((scrollTop === 0 && deltaY > 0) || (scrollTop >= i.contentHeight - i.containerHeight && deltaY < 0)) {
+        return !i.settings.wheelPropagation;
+      }
+    }
+
+    var scrollLeft = element.scrollLeft;
+    if (deltaY === 0) {
+      if (!i.scrollbarXActive) {
+        return false;
+      }
+      if ((scrollLeft === 0 && deltaX < 0) || (scrollLeft >= i.contentWidth - i.containerWidth && deltaX > 0)) {
+        return !i.settings.wheelPropagation;
+      }
+    }
+    return true;
+  }
+
+  i.event.bind(i.ownerDocument, 'keydown', function (e) {
+    if ((e.isDefaultPrevented && e.isDefaultPrevented()) || e.defaultPrevented) {
+      return;
+    }
+
+    var focused = dom.matches(i.scrollbarX, ':focus') ||
+                  dom.matches(i.scrollbarY, ':focus');
+
+    if (!hovered && !focused) {
+      return;
+    }
+
+    var activeElement = document.activeElement ? document.activeElement : i.ownerDocument.activeElement;
+    if (activeElement) {
+      if (activeElement.tagName === 'IFRAME') {
+        activeElement = activeElement.contentDocument.activeElement;
+      } else {
+        // go deeper if element is a webcomponent
+        while (activeElement.shadowRoot) {
+          activeElement = activeElement.shadowRoot.activeElement;
+        }
+      }
+      if (_.isEditable(activeElement)) {
+        return;
+      }
+    }
+
+    var deltaX = 0;
+    var deltaY = 0;
+
+    switch (e.which) {
+    case 37: // left
+      if (e.metaKey) {
+        deltaX = -i.contentWidth;
+      } else if (e.altKey) {
+        deltaX = -i.containerWidth;
+      } else {
+        deltaX = -30;
+      }
+      break;
+    case 38: // up
+      if (e.metaKey) {
+        deltaY = i.contentHeight;
+      } else if (e.altKey) {
+        deltaY = i.containerHeight;
+      } else {
+        deltaY = 30;
+      }
+      break;
+    case 39: // right
+      if (e.metaKey) {
+        deltaX = i.contentWidth;
+      } else if (e.altKey) {
+        deltaX = i.containerWidth;
+      } else {
+        deltaX = 30;
+      }
+      break;
+    case 40: // down
+      if (e.metaKey) {
+        deltaY = -i.contentHeight;
+      } else if (e.altKey) {
+        deltaY = -i.containerHeight;
+      } else {
+        deltaY = -30;
+      }
+      break;
+    case 33: // page up
+      deltaY = 90;
+      break;
+    case 32: // space bar
+      if (e.shiftKey) {
+        deltaY = 90;
+      } else {
+        deltaY = -90;
+      }
+      break;
+    case 34: // page down
+      deltaY = -90;
+      break;
+    case 35: // end
+      if (e.ctrlKey) {
+        deltaY = -i.contentHeight;
+      } else {
+        deltaY = -i.containerHeight;
+      }
+      break;
+    case 36: // home
+      if (e.ctrlKey) {
+        deltaY = element.scrollTop;
+      } else {
+        deltaY = i.containerHeight;
+      }
+      break;
+    default:
+      return;
+    }
+
+    updateScroll(element, 'top', element.scrollTop - deltaY);
+    updateScroll(element, 'left', element.scrollLeft + deltaX);
+    updateGeometry(element);
+
+    shouldPrevent = shouldPreventDefault(deltaX, deltaY);
+    if (shouldPrevent) {
+      e.preventDefault();
+    }
+  });
+}
+
+module.exports = function (element) {
+  var i = instances.get(element);
+  bindKeyboardHandler(element, i);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/handler/mouse-wheel.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+function bindMouseWheelHandler(element, i) {
+  var shouldPrevent = false;
+
+  function shouldPreventDefault(deltaX, deltaY) {
+    var scrollTop = element.scrollTop;
+    if (deltaX === 0) {
+      if (!i.scrollbarYActive) {
+        return false;
+      }
+      if ((scrollTop === 0 && deltaY > 0) || (scrollTop >= i.contentHeight - i.containerHeight && deltaY < 0)) {
+        return !i.settings.wheelPropagation;
+      }
+    }
+
+    var scrollLeft = element.scrollLeft;
+    if (deltaY === 0) {
+      if (!i.scrollbarXActive) {
+        return false;
+      }
+      if ((scrollLeft === 0 && deltaX < 0) || (scrollLeft >= i.contentWidth - i.containerWidth && deltaX > 0)) {
+        return !i.settings.wheelPropagation;
+      }
+    }
+    return true;
+  }
+
+  function getDeltaFromEvent(e) {
+    var deltaX = e.deltaX;
+    var deltaY = -1 * e.deltaY;
+
+    if (typeof deltaX === "undefined" || typeof deltaY === "undefined") {
+      // OS X Safari
+      deltaX = -1 * e.wheelDeltaX / 6;
+      deltaY = e.wheelDeltaY / 6;
+    }
+
+    if (e.deltaMode && e.deltaMode === 1) {
+      // Firefox in deltaMode 1: Line scrolling
+      deltaX *= 10;
+      deltaY *= 10;
+    }
+
+    if (deltaX !== deltaX && deltaY !== deltaY/* NaN checks */) {
+      // IE in some mouse drivers
+      deltaX = 0;
+      deltaY = e.wheelDelta;
+    }
+
+    if (e.shiftKey) {
+      // reverse axis with shift key
+      return [-deltaY, -deltaX];
+    }
+    return [deltaX, deltaY];
+  }
+
+  function shouldBeConsumedByChild(deltaX, deltaY) {
+    var child = element.querySelector('textarea:hover, select[multiple]:hover, .ps-child:hover');
+    if (child) {
+      var style = window.getComputedStyle(child);
+      var overflow = [
+        style.overflow,
+        style.overflowX,
+        style.overflowY
+      ].join('');
+
+      if (!overflow.match(/(scroll|auto)/)) {
+        // if not scrollable
+        return false;
+      }
+
+      var maxScrollTop = child.scrollHeight - child.clientHeight;
+      if (maxScrollTop > 0) {
+        if (!(child.scrollTop === 0 && deltaY > 0) && !(child.scrollTop === maxScrollTop && deltaY < 0)) {
+          return true;
+        }
+      }
+      var maxScrollLeft = child.scrollLeft - child.clientWidth;
+      if (maxScrollLeft > 0) {
+        if (!(child.scrollLeft === 0 && deltaX < 0) && !(child.scrollLeft === maxScrollLeft && deltaX > 0)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function mousewheelHandler(e) {
+    var delta = getDeltaFromEvent(e);
+
+    var deltaX = delta[0];
+    var deltaY = delta[1];
+
+    if (shouldBeConsumedByChild(deltaX, deltaY)) {
+      return;
+    }
+
+    shouldPrevent = false;
+    if (!i.settings.useBothWheelAxes) {
+      // deltaX will only be used for horizontal scrolling and deltaY will
+      // only be used for vertical scrolling - this is the default
+      updateScroll(element, 'top', element.scrollTop - (deltaY * i.settings.wheelSpeed));
+      updateScroll(element, 'left', element.scrollLeft + (deltaX * i.settings.wheelSpeed));
+    } else if (i.scrollbarYActive && !i.scrollbarXActive) {
+      // only vertical scrollbar is active and useBothWheelAxes option is
+      // active, so let's scroll vertical bar using both mouse wheel axes
+      if (deltaY) {
+        updateScroll(element, 'top', element.scrollTop - (deltaY * i.settings.wheelSpeed));
+      } else {
+        updateScroll(element, 'top', element.scrollTop + (deltaX * i.settings.wheelSpeed));
+      }
+      shouldPrevent = true;
+    } else if (i.scrollbarXActive && !i.scrollbarYActive) {
+      // useBothWheelAxes and only horizontal bar is active, so use both
+      // wheel axes for horizontal bar
+      if (deltaX) {
+        updateScroll(element, 'left', element.scrollLeft + (deltaX * i.settings.wheelSpeed));
+      } else {
+        updateScroll(element, 'left', element.scrollLeft - (deltaY * i.settings.wheelSpeed));
+      }
+      shouldPrevent = true;
+    }
+
+    updateGeometry(element);
+
+    shouldPrevent = (shouldPrevent || shouldPreventDefault(deltaX, deltaY));
+    if (shouldPrevent) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }
+
+  if (typeof window.onwheel !== "undefined") {
+    i.event.bind(element, 'wheel', mousewheelHandler);
+  } else if (typeof window.onmousewheel !== "undefined") {
+    i.event.bind(element, 'mousewheel', mousewheelHandler);
+  }
+}
+
+module.exports = function (element) {
+  var i = instances.get(element);
+  bindMouseWheelHandler(element, i);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/handler/native-scroll.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+
+function bindNativeScrollHandler(element, i) {
+  i.event.bind(element, 'scroll', function () {
+    updateGeometry(element);
+  });
+}
+
+module.exports = function (element) {
+  var i = instances.get(element);
+  bindNativeScrollHandler(element, i);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/handler/selection.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+function bindSelectionHandler(element, i) {
+  function getRangeNode() {
+    var selection = window.getSelection ? window.getSelection() :
+                    document.getSelection ? document.getSelection() : '';
+    if (selection.toString().length === 0) {
+      return null;
+    } else {
+      return selection.getRangeAt(0).commonAncestorContainer;
+    }
+  }
+
+  var scrollingLoop = null;
+  var scrollDiff = {top: 0, left: 0};
+  function startScrolling() {
+    if (!scrollingLoop) {
+      scrollingLoop = setInterval(function () {
+        if (!instances.get(element)) {
+          clearInterval(scrollingLoop);
+          return;
+        }
+
+        updateScroll(element, 'top', element.scrollTop + scrollDiff.top);
+        updateScroll(element, 'left', element.scrollLeft + scrollDiff.left);
+        updateGeometry(element);
+      }, 50); // every .1 sec
+    }
+  }
+  function stopScrolling() {
+    if (scrollingLoop) {
+      clearInterval(scrollingLoop);
+      scrollingLoop = null;
+    }
+    _.stopScrolling(element);
+  }
+
+  var isSelected = false;
+  i.event.bind(i.ownerDocument, 'selectionchange', function () {
+    if (element.contains(getRangeNode())) {
+      isSelected = true;
+    } else {
+      isSelected = false;
+      stopScrolling();
+    }
+  });
+  i.event.bind(window, 'mouseup', function () {
+    if (isSelected) {
+      isSelected = false;
+      stopScrolling();
+    }
+  });
+  i.event.bind(window, 'keyup', function () {
+    if (isSelected) {
+      isSelected = false;
+      stopScrolling();
+    }
+  });
+
+  i.event.bind(window, 'mousemove', function (e) {
+    if (isSelected) {
+      var mousePosition = {x: e.pageX, y: e.pageY};
+      var containerGeometry = {
+        left: element.offsetLeft,
+        right: element.offsetLeft + element.offsetWidth,
+        top: element.offsetTop,
+        bottom: element.offsetTop + element.offsetHeight
+      };
+
+      if (mousePosition.x < containerGeometry.left + 3) {
+        scrollDiff.left = -5;
+        _.startScrolling(element, 'x');
+      } else if (mousePosition.x > containerGeometry.right - 3) {
+        scrollDiff.left = 5;
+        _.startScrolling(element, 'x');
+      } else {
+        scrollDiff.left = 0;
+      }
+
+      if (mousePosition.y < containerGeometry.top + 3) {
+        if (containerGeometry.top + 3 - mousePosition.y < 5) {
+          scrollDiff.top = -5;
+        } else {
+          scrollDiff.top = -20;
+        }
+        _.startScrolling(element, 'y');
+      } else if (mousePosition.y > containerGeometry.bottom - 3) {
+        if (mousePosition.y - containerGeometry.bottom + 3 < 5) {
+          scrollDiff.top = 5;
+        } else {
+          scrollDiff.top = 20;
+        }
+        _.startScrolling(element, 'y');
+      } else {
+        scrollDiff.top = 0;
+      }
+
+      if (scrollDiff.top === 0 && scrollDiff.left === 0) {
+        stopScrolling();
+      } else {
+        startScrolling();
+      }
+    }
+  });
+}
+
+module.exports = function (element) {
+  var i = instances.get(element);
+  bindSelectionHandler(element, i);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/handler/touch.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+function bindTouchHandler(element, i, supportsTouch, supportsIePointer) {
+  function shouldPreventDefault(deltaX, deltaY) {
+    var scrollTop = element.scrollTop;
+    var scrollLeft = element.scrollLeft;
+    var magnitudeX = Math.abs(deltaX);
+    var magnitudeY = Math.abs(deltaY);
+
+    if (magnitudeY > magnitudeX) {
+      // user is perhaps trying to swipe up/down the page
+
+      if (((deltaY < 0) && (scrollTop === i.contentHeight - i.containerHeight)) ||
+          ((deltaY > 0) && (scrollTop === 0))) {
+        return !i.settings.swipePropagation;
+      }
+    } else if (magnitudeX > magnitudeY) {
+      // user is perhaps trying to swipe left/right across the page
+
+      if (((deltaX < 0) && (scrollLeft === i.contentWidth - i.containerWidth)) ||
+          ((deltaX > 0) && (scrollLeft === 0))) {
+        return !i.settings.swipePropagation;
+      }
+    }
+
+    return true;
+  }
+
+  function applyTouchMove(differenceX, differenceY) {
+    updateScroll(element, 'top', element.scrollTop - differenceY);
+    updateScroll(element, 'left', element.scrollLeft - differenceX);
+
+    updateGeometry(element);
+  }
+
+  var startOffset = {};
+  var startTime = 0;
+  var speed = {};
+  var easingLoop = null;
+  var inGlobalTouch = false;
+  var inLocalTouch = false;
+
+  function globalTouchStart() {
+    inGlobalTouch = true;
+  }
+  function globalTouchEnd() {
+    inGlobalTouch = false;
+  }
+
+  function getTouch(e) {
+    if (e.targetTouches) {
+      return e.targetTouches[0];
+    } else {
+      // Maybe IE pointer
+      return e;
+    }
+  }
+  function shouldHandle(e) {
+    if (e.pointerType && e.pointerType === 'pen' && e.buttons === 0) {
+      return false;
+    }
+    if (e.targetTouches && e.targetTouches.length === 1) {
+      return true;
+    }
+    if (e.pointerType && e.pointerType !== 'mouse' && e.pointerType !== e.MSPOINTER_TYPE_MOUSE) {
+      return true;
+    }
+    return false;
+  }
+  function touchStart(e) {
+    if (shouldHandle(e)) {
+      inLocalTouch = true;
+
+      var touch = getTouch(e);
+
+      startOffset.pageX = touch.pageX;
+      startOffset.pageY = touch.pageY;
+
+      startTime = (new Date()).getTime();
+
+      if (easingLoop !== null) {
+        clearInterval(easingLoop);
+      }
+
+      e.stopPropagation();
+    }
+  }
+  function touchMove(e) {
+    if (!inLocalTouch && i.settings.swipePropagation) {
+      touchStart(e);
+    }
+    if (!inGlobalTouch && inLocalTouch && shouldHandle(e)) {
+      var touch = getTouch(e);
+
+      var currentOffset = {pageX: touch.pageX, pageY: touch.pageY};
+
+      var differenceX = currentOffset.pageX - startOffset.pageX;
+      var differenceY = currentOffset.pageY - startOffset.pageY;
+
+      applyTouchMove(differenceX, differenceY);
+      startOffset = currentOffset;
+
+      var currentTime = (new Date()).getTime();
+
+      var timeGap = currentTime - startTime;
+      if (timeGap > 0) {
+        speed.x = differenceX / timeGap;
+        speed.y = differenceY / timeGap;
+        startTime = currentTime;
+      }
+
+      if (shouldPreventDefault(differenceX, differenceY)) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    }
+  }
+  function touchEnd() {
+    if (!inGlobalTouch && inLocalTouch) {
+      inLocalTouch = false;
+
+      if (i.settings.swipeEasing) {
+        clearInterval(easingLoop);
+        easingLoop = setInterval(function () {
+          if (!instances.get(element)) {
+            clearInterval(easingLoop);
+            return;
+          }
+
+          if (!speed.x && !speed.y) {
+            clearInterval(easingLoop);
+            return;
+          }
+
+          if (Math.abs(speed.x) < 0.01 && Math.abs(speed.y) < 0.01) {
+            clearInterval(easingLoop);
+            return;
+          }
+
+          applyTouchMove(speed.x * 30, speed.y * 30);
+
+          speed.x *= 0.8;
+          speed.y *= 0.8;
+        }, 10);
+      }
+    }
+  }
+
+  if (supportsTouch) {
+    i.event.bind(window, 'touchstart', globalTouchStart);
+    i.event.bind(window, 'touchend', globalTouchEnd);
+    i.event.bind(element, 'touchstart', touchStart);
+    i.event.bind(element, 'touchmove', touchMove);
+    i.event.bind(element, 'touchend', touchEnd);
+  } else if (supportsIePointer) {
+    if (window.PointerEvent) {
+      i.event.bind(window, 'pointerdown', globalTouchStart);
+      i.event.bind(window, 'pointerup', globalTouchEnd);
+      i.event.bind(element, 'pointerdown', touchStart);
+      i.event.bind(element, 'pointermove', touchMove);
+      i.event.bind(element, 'pointerup', touchEnd);
+    } else if (window.MSPointerEvent) {
+      i.event.bind(window, 'MSPointerDown', globalTouchStart);
+      i.event.bind(window, 'MSPointerUp', globalTouchEnd);
+      i.event.bind(element, 'MSPointerDown', touchStart);
+      i.event.bind(element, 'MSPointerMove', touchMove);
+      i.event.bind(element, 'MSPointerUp', touchEnd);
+    }
+  }
+}
+
+module.exports = function (element) {
+  if (!_.env.supportsTouch && !_.env.supportsIePointer) {
+    return;
+  }
+
+  var i = instances.get(element);
+  bindTouchHandler(element, i, _.env.supportsTouch, _.env.supportsIePointer);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/initialize.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+
+// Handlers
+var handlers = {
+  'click-rail': __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/handler/click-rail.js"),
+  'drag-scrollbar': __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/handler/drag-scrollbar.js"),
+  'keyboard': __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/handler/keyboard.js"),
+  'wheel': __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/handler/mouse-wheel.js"),
+  'touch': __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/handler/touch.js"),
+  'selection': __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/handler/selection.js")
+};
+var nativeScrollHandler = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/handler/native-scroll.js");
+
+module.exports = function (element, userSettings) {
+  element.classList.add('ps');
+
+  // Create a plugin instance.
+  var i = instances.add(
+    element,
+    typeof userSettings === 'object' ? userSettings : {}
+  );
+
+  element.classList.add('ps--theme_' + i.settings.theme);
+
+  i.settings.handlers.forEach(function (handlerName) {
+    handlers[handlerName](element);
+  });
+
+  nativeScrollHandler(element);
+
+  updateGeometry(element);
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/instances.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var defaultSettings = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/default-setting.js");
+var dom = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/dom.js");
+var EventManager = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/event-manager.js");
+var guid = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/guid.js");
+
+var instances = {};
+
+function Instance(element, userSettings) {
+  var i = this;
+
+  i.settings = defaultSettings();
+  for (var key in userSettings) {
+    i.settings[key] = userSettings[key];
+  }
+
+  i.containerWidth = null;
+  i.containerHeight = null;
+  i.contentWidth = null;
+  i.contentHeight = null;
+
+  i.isRtl = dom.css(element, 'direction') === "rtl";
+  i.isNegativeScroll = (function () {
+    var originalScrollLeft = element.scrollLeft;
+    var result = null;
+    element.scrollLeft = -1;
+    result = element.scrollLeft < 0;
+    element.scrollLeft = originalScrollLeft;
+    return result;
+  })();
+  i.negativeScrollAdjustment = i.isNegativeScroll ? element.scrollWidth - element.clientWidth : 0;
+  i.event = new EventManager();
+  i.ownerDocument = element.ownerDocument || document;
+
+  function focus() {
+    element.classList.add('ps--focus');
+  }
+
+  function blur() {
+    element.classList.remove('ps--focus');
+  }
+
+  i.scrollbarXRail = dom.appendTo(dom.create('div', 'ps__scrollbar-x-rail'), element);
+  i.scrollbarX = dom.appendTo(dom.create('div', 'ps__scrollbar-x'), i.scrollbarXRail);
+  i.scrollbarX.setAttribute('tabindex', 0);
+  i.event.bind(i.scrollbarX, 'focus', focus);
+  i.event.bind(i.scrollbarX, 'blur', blur);
+  i.scrollbarXActive = null;
+  i.scrollbarXWidth = null;
+  i.scrollbarXLeft = null;
+  i.scrollbarXBottom = _.toInt(dom.css(i.scrollbarXRail, 'bottom'));
+  i.isScrollbarXUsingBottom = i.scrollbarXBottom === i.scrollbarXBottom; // !isNaN
+  i.scrollbarXTop = i.isScrollbarXUsingBottom ? null : _.toInt(dom.css(i.scrollbarXRail, 'top'));
+  i.railBorderXWidth = _.toInt(dom.css(i.scrollbarXRail, 'borderLeftWidth')) + _.toInt(dom.css(i.scrollbarXRail, 'borderRightWidth'));
+  // Set rail to display:block to calculate margins
+  dom.css(i.scrollbarXRail, 'display', 'block');
+  i.railXMarginWidth = _.toInt(dom.css(i.scrollbarXRail, 'marginLeft')) + _.toInt(dom.css(i.scrollbarXRail, 'marginRight'));
+  dom.css(i.scrollbarXRail, 'display', '');
+  i.railXWidth = null;
+  i.railXRatio = null;
+
+  i.scrollbarYRail = dom.appendTo(dom.create('div', 'ps__scrollbar-y-rail'), element);
+  i.scrollbarY = dom.appendTo(dom.create('div', 'ps__scrollbar-y'), i.scrollbarYRail);
+  i.scrollbarY.setAttribute('tabindex', 0);
+  i.event.bind(i.scrollbarY, 'focus', focus);
+  i.event.bind(i.scrollbarY, 'blur', blur);
+  i.scrollbarYActive = null;
+  i.scrollbarYHeight = null;
+  i.scrollbarYTop = null;
+  i.scrollbarYRight = _.toInt(dom.css(i.scrollbarYRail, 'right'));
+  i.isScrollbarYUsingRight = i.scrollbarYRight === i.scrollbarYRight; // !isNaN
+  i.scrollbarYLeft = i.isScrollbarYUsingRight ? null : _.toInt(dom.css(i.scrollbarYRail, 'left'));
+  i.scrollbarYOuterWidth = i.isRtl ? _.outerWidth(i.scrollbarY) : null;
+  i.railBorderYWidth = _.toInt(dom.css(i.scrollbarYRail, 'borderTopWidth')) + _.toInt(dom.css(i.scrollbarYRail, 'borderBottomWidth'));
+  dom.css(i.scrollbarYRail, 'display', 'block');
+  i.railYMarginHeight = _.toInt(dom.css(i.scrollbarYRail, 'marginTop')) + _.toInt(dom.css(i.scrollbarYRail, 'marginBottom'));
+  dom.css(i.scrollbarYRail, 'display', '');
+  i.railYHeight = null;
+  i.railYRatio = null;
+}
+
+function getId(element) {
+  return element.getAttribute('data-ps-id');
+}
+
+function setId(element, id) {
+  element.setAttribute('data-ps-id', id);
+}
+
+function removeId(element) {
+  element.removeAttribute('data-ps-id');
+}
+
+exports.add = function (element, userSettings) {
+  var newId = guid();
+  setId(element, newId);
+  instances[newId] = new Instance(element, userSettings);
+  return instances[newId];
+};
+
+exports.remove = function (element) {
+  delete instances[getId(element)];
+  removeId(element);
+};
+
+exports.get = function (element) {
+  return instances[getId(element)];
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/update-geometry.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var dom = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/dom.js");
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+function getThumbSize(i, thumbSize) {
+  if (i.settings.minScrollbarLength) {
+    thumbSize = Math.max(thumbSize, i.settings.minScrollbarLength);
+  }
+  if (i.settings.maxScrollbarLength) {
+    thumbSize = Math.min(thumbSize, i.settings.maxScrollbarLength);
+  }
+  return thumbSize;
+}
+
+function updateCss(element, i) {
+  var xRailOffset = {width: i.railXWidth};
+  if (i.isRtl) {
+    xRailOffset.left = i.negativeScrollAdjustment + element.scrollLeft + i.containerWidth - i.contentWidth;
+  } else {
+    xRailOffset.left = element.scrollLeft;
+  }
+  if (i.isScrollbarXUsingBottom) {
+    xRailOffset.bottom = i.scrollbarXBottom - element.scrollTop;
+  } else {
+    xRailOffset.top = i.scrollbarXTop + element.scrollTop;
+  }
+  dom.css(i.scrollbarXRail, xRailOffset);
+
+  var yRailOffset = {top: element.scrollTop, height: i.railYHeight};
+  if (i.isScrollbarYUsingRight) {
+    if (i.isRtl) {
+      yRailOffset.right = i.contentWidth - (i.negativeScrollAdjustment + element.scrollLeft) - i.scrollbarYRight - i.scrollbarYOuterWidth;
+    } else {
+      yRailOffset.right = i.scrollbarYRight - element.scrollLeft;
+    }
+  } else {
+    if (i.isRtl) {
+      yRailOffset.left = i.negativeScrollAdjustment + element.scrollLeft + i.containerWidth * 2 - i.contentWidth - i.scrollbarYLeft - i.scrollbarYOuterWidth;
+    } else {
+      yRailOffset.left = i.scrollbarYLeft + element.scrollLeft;
+    }
+  }
+  dom.css(i.scrollbarYRail, yRailOffset);
+
+  dom.css(i.scrollbarX, {left: i.scrollbarXLeft, width: i.scrollbarXWidth - i.railBorderXWidth});
+  dom.css(i.scrollbarY, {top: i.scrollbarYTop, height: i.scrollbarYHeight - i.railBorderYWidth});
+}
+
+module.exports = function (element) {
+  var i = instances.get(element);
+
+  i.containerWidth = element.clientWidth;
+  i.containerHeight = element.clientHeight;
+  i.contentWidth = element.scrollWidth;
+  i.contentHeight = element.scrollHeight;
+
+  var existingRails;
+  if (!element.contains(i.scrollbarXRail)) {
+    existingRails = dom.queryChildren(element, '.ps__scrollbar-x-rail');
+    if (existingRails.length > 0) {
+      existingRails.forEach(function (rail) {
+        dom.remove(rail);
+      });
+    }
+    dom.appendTo(i.scrollbarXRail, element);
+  }
+  if (!element.contains(i.scrollbarYRail)) {
+    existingRails = dom.queryChildren(element, '.ps__scrollbar-y-rail');
+    if (existingRails.length > 0) {
+      existingRails.forEach(function (rail) {
+        dom.remove(rail);
+      });
+    }
+    dom.appendTo(i.scrollbarYRail, element);
+  }
+
+  if (!i.settings.suppressScrollX && i.containerWidth + i.settings.scrollXMarginOffset < i.contentWidth) {
+    i.scrollbarXActive = true;
+    i.railXWidth = i.containerWidth - i.railXMarginWidth;
+    i.railXRatio = i.containerWidth / i.railXWidth;
+    i.scrollbarXWidth = getThumbSize(i, _.toInt(i.railXWidth * i.containerWidth / i.contentWidth));
+    i.scrollbarXLeft = _.toInt((i.negativeScrollAdjustment + element.scrollLeft) * (i.railXWidth - i.scrollbarXWidth) / (i.contentWidth - i.containerWidth));
+  } else {
+    i.scrollbarXActive = false;
+  }
+
+  if (!i.settings.suppressScrollY && i.containerHeight + i.settings.scrollYMarginOffset < i.contentHeight) {
+    i.scrollbarYActive = true;
+    i.railYHeight = i.containerHeight - i.railYMarginHeight;
+    i.railYRatio = i.containerHeight / i.railYHeight;
+    i.scrollbarYHeight = getThumbSize(i, _.toInt(i.railYHeight * i.containerHeight / i.contentHeight));
+    i.scrollbarYTop = _.toInt(element.scrollTop * (i.railYHeight - i.scrollbarYHeight) / (i.contentHeight - i.containerHeight));
+  } else {
+    i.scrollbarYActive = false;
+  }
+
+  if (i.scrollbarXLeft >= i.railXWidth - i.scrollbarXWidth) {
+    i.scrollbarXLeft = i.railXWidth - i.scrollbarXWidth;
+  }
+  if (i.scrollbarYTop >= i.railYHeight - i.scrollbarYHeight) {
+    i.scrollbarYTop = i.railYHeight - i.scrollbarYHeight;
+  }
+
+  updateCss(element, i);
+
+  if (i.scrollbarXActive) {
+    element.classList.add('ps--active-x');
+  } else {
+    element.classList.remove('ps--active-x');
+    i.scrollbarXWidth = 0;
+    i.scrollbarXLeft = 0;
+    updateScroll(element, 'left', 0);
+  }
+  if (i.scrollbarYActive) {
+    element.classList.add('ps--active-y');
+  } else {
+    element.classList.remove('ps--active-y');
+    i.scrollbarYHeight = 0;
+    i.scrollbarYTop = 0;
+    updateScroll(element, 'top', 0);
+  }
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/update-scroll.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+
+var createDOMEvent = function (name) {
+  var event = document.createEvent("Event");
+  event.initEvent(name, true, true);
+  return event;
+};
+
+module.exports = function (element, axis, value) {
+  if (typeof element === 'undefined') {
+    throw 'You must provide an element to the update-scroll function';
+  }
+
+  if (typeof axis === 'undefined') {
+    throw 'You must provide an axis to the update-scroll function';
+  }
+
+  if (typeof value === 'undefined') {
+    throw 'You must provide a value to the update-scroll function';
+  }
+
+  if (axis === 'top' && value <= 0) {
+    element.scrollTop = value = 0; // don't allow negative scroll
+    element.dispatchEvent(createDOMEvent('ps-y-reach-start'));
+  }
+
+  if (axis === 'left' && value <= 0) {
+    element.scrollLeft = value = 0; // don't allow negative scroll
+    element.dispatchEvent(createDOMEvent('ps-x-reach-start'));
+  }
+
+  var i = instances.get(element);
+
+  if (axis === 'top' && value >= i.contentHeight - i.containerHeight) {
+    // don't allow scroll past container
+    value = i.contentHeight - i.containerHeight;
+    if (value - element.scrollTop <= 2) {
+      // mitigates rounding errors on non-subpixel scroll values
+      value = element.scrollTop;
+    } else {
+      element.scrollTop = value;
+    }
+    element.dispatchEvent(createDOMEvent('ps-y-reach-end'));
+  }
+
+  if (axis === 'left' && value >= i.contentWidth - i.containerWidth) {
+    // don't allow scroll past container
+    value = i.contentWidth - i.containerWidth;
+    if (value - element.scrollLeft <= 2) {
+      // mitigates rounding errors on non-subpixel scroll values
+      value = element.scrollLeft;
+    } else {
+      element.scrollLeft = value;
+    }
+    element.dispatchEvent(createDOMEvent('ps-x-reach-end'));
+  }
+
+  if (i.lastTop === undefined) {
+    i.lastTop = element.scrollTop;
+  }
+
+  if (i.lastLeft === undefined) {
+    i.lastLeft = element.scrollLeft;
+  }
+
+  if (axis === 'top' && value < i.lastTop) {
+    element.dispatchEvent(createDOMEvent('ps-scroll-up'));
+  }
+
+  if (axis === 'top' && value > i.lastTop) {
+    element.dispatchEvent(createDOMEvent('ps-scroll-down'));
+  }
+
+  if (axis === 'left' && value < i.lastLeft) {
+    element.dispatchEvent(createDOMEvent('ps-scroll-left'));
+  }
+
+  if (axis === 'left' && value > i.lastLeft) {
+    element.dispatchEvent(createDOMEvent('ps-scroll-right'));
+  }
+
+  if (axis === 'top' && value !== i.lastTop) {
+    element.scrollTop = i.lastTop = value;
+    element.dispatchEvent(createDOMEvent('ps-scroll-y'));
+  }
+
+  if (axis === 'left' && value !== i.lastLeft) {
+    element.scrollLeft = i.lastLeft = value;
+    element.dispatchEvent(createDOMEvent('ps-scroll-x'));
+  }
+
+};
+
+
+/***/ }),
+
+/***/ "../../../../perfect-scrollbar/src/js/plugin/update.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var _ = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/helper.js");
+var dom = __webpack_require__("../../../../perfect-scrollbar/src/js/lib/dom.js");
+var instances = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/instances.js");
+var updateGeometry = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-geometry.js");
+var updateScroll = __webpack_require__("../../../../perfect-scrollbar/src/js/plugin/update-scroll.js");
+
+module.exports = function (element) {
+  var i = instances.get(element);
+
+  if (!i) {
+    return;
+  }
+
+  // Recalcuate negative scrollLeft adjustment
+  i.negativeScrollAdjustment = i.isNegativeScroll ? element.scrollWidth - element.clientWidth : 0;
+
+  // Recalculate rail margins
+  dom.css(i.scrollbarXRail, 'display', 'block');
+  dom.css(i.scrollbarYRail, 'display', 'block');
+  i.railXMarginWidth = _.toInt(dom.css(i.scrollbarXRail, 'marginLeft')) + _.toInt(dom.css(i.scrollbarXRail, 'marginRight'));
+  i.railYMarginHeight = _.toInt(dom.css(i.scrollbarYRail, 'marginTop')) + _.toInt(dom.css(i.scrollbarYRail, 'marginBottom'));
+
+  // Hide scrollbars not to affect scrollWidth and scrollHeight
+  dom.css(i.scrollbarXRail, 'display', 'none');
+  dom.css(i.scrollbarYRail, 'display', 'none');
+
+  updateGeometry(element);
+
+  // Update top/left scroll to trigger events
+  updateScroll(element, 'top', element.scrollTop);
+  updateScroll(element, 'left', element.scrollLeft);
+
+  dom.css(i.scrollbarXRail, 'display', '');
+  dom.css(i.scrollbarYRail, 'display', '');
+};
+
 
 /***/ }),
 
@@ -3955,6 +7904,18 @@ Observable_1.Observable.prototype._catch = catch_1._catch;
 
 /***/ }),
 
+/***/ "../../../../rxjs/add/operator/distinctUntilChanged.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var Observable_1 = __webpack_require__("../../../../rxjs/Observable.js");
+var distinctUntilChanged_1 = __webpack_require__("../../../../rxjs/operator/distinctUntilChanged.js");
+Observable_1.Observable.prototype.distinctUntilChanged = distinctUntilChanged_1.distinctUntilChanged;
+//# sourceMappingURL=distinctUntilChanged.js.map
+
+/***/ }),
+
 /***/ "../../../../rxjs/add/operator/first.js":
 /***/ (function(module, exports, __webpack_require__) {
 
@@ -3989,6 +7950,18 @@ var mergeMap_1 = __webpack_require__("../../../../rxjs/operator/mergeMap.js");
 Observable_1.Observable.prototype.mergeMap = mergeMap_1.mergeMap;
 Observable_1.Observable.prototype.flatMap = mergeMap_1.mergeMap;
 //# sourceMappingURL=mergeMap.js.map
+
+/***/ }),
+
+/***/ "../../../../rxjs/add/operator/throttleTime.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var Observable_1 = __webpack_require__("../../../../rxjs/Observable.js");
+var throttleTime_1 = __webpack_require__("../../../../rxjs/operator/throttleTime.js");
+Observable_1.Observable.prototype.throttleTime = throttleTime_1.throttleTime;
+//# sourceMappingURL=throttleTime.js.map
 
 /***/ }),
 
@@ -5489,6 +9462,121 @@ exports.concatMap = concatMap;
 
 /***/ }),
 
+/***/ "../../../../rxjs/operator/distinctUntilChanged.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var __extends = (this && this.__extends) || function (d, b) {
+    for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p];
+    function __() { this.constructor = d; }
+    d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+};
+var Subscriber_1 = __webpack_require__("../../../../rxjs/Subscriber.js");
+var tryCatch_1 = __webpack_require__("../../../../rxjs/util/tryCatch.js");
+var errorObject_1 = __webpack_require__("../../../../rxjs/util/errorObject.js");
+/* tslint:enable:max-line-length */
+/**
+ * Returns an Observable that emits all items emitted by the source Observable that are distinct by comparison from the previous item.
+ *
+ * If a comparator function is provided, then it will be called for each item to test for whether or not that value should be emitted.
+ *
+ * If a comparator function is not provided, an equality check is used by default.
+ *
+ * @example <caption>A simple example with numbers</caption>
+ * Observable.of(1, 1, 2, 2, 2, 1, 1, 2, 3, 3, 4)
+ *   .distinctUntilChanged()
+ *   .subscribe(x => console.log(x)); // 1, 2, 1, 2, 3, 4
+ *
+ * @example <caption>An example using a compare function</caption>
+ * interface Person {
+ *    age: number,
+ *    name: string
+ * }
+ *
+ * Observable.of<Person>(
+ *     { age: 4, name: 'Foo'},
+ *     { age: 7, name: 'Bar'},
+ *     { age: 5, name: 'Foo'})
+ *     { age: 6, name: 'Foo'})
+ *     .distinctUntilChanged((p: Person, q: Person) => p.name === q.name)
+ *     .subscribe(x => console.log(x));
+ *
+ * // displays:
+ * // { age: 4, name: 'Foo' }
+ * // { age: 7, name: 'Bar' }
+ * // { age: 5, name: 'Foo' }
+ *
+ * @see {@link distinct}
+ * @see {@link distinctUntilKeyChanged}
+ *
+ * @param {function} [compare] Optional comparison function called to test if an item is distinct from the previous item in the source.
+ * @return {Observable} An Observable that emits items from the source Observable with distinct values.
+ * @method distinctUntilChanged
+ * @owner Observable
+ */
+function distinctUntilChanged(compare, keySelector) {
+    return this.lift(new DistinctUntilChangedOperator(compare, keySelector));
+}
+exports.distinctUntilChanged = distinctUntilChanged;
+var DistinctUntilChangedOperator = (function () {
+    function DistinctUntilChangedOperator(compare, keySelector) {
+        this.compare = compare;
+        this.keySelector = keySelector;
+    }
+    DistinctUntilChangedOperator.prototype.call = function (subscriber, source) {
+        return source.subscribe(new DistinctUntilChangedSubscriber(subscriber, this.compare, this.keySelector));
+    };
+    return DistinctUntilChangedOperator;
+}());
+/**
+ * We need this JSDoc comment for affecting ESDoc.
+ * @ignore
+ * @extends {Ignored}
+ */
+var DistinctUntilChangedSubscriber = (function (_super) {
+    __extends(DistinctUntilChangedSubscriber, _super);
+    function DistinctUntilChangedSubscriber(destination, compare, keySelector) {
+        _super.call(this, destination);
+        this.keySelector = keySelector;
+        this.hasKey = false;
+        if (typeof compare === 'function') {
+            this.compare = compare;
+        }
+    }
+    DistinctUntilChangedSubscriber.prototype.compare = function (x, y) {
+        return x === y;
+    };
+    DistinctUntilChangedSubscriber.prototype._next = function (value) {
+        var keySelector = this.keySelector;
+        var key = value;
+        if (keySelector) {
+            key = tryCatch_1.tryCatch(this.keySelector)(value);
+            if (key === errorObject_1.errorObject) {
+                return this.destination.error(errorObject_1.errorObject.e);
+            }
+        }
+        var result = false;
+        if (this.hasKey) {
+            result = tryCatch_1.tryCatch(this.compare)(this.key, key);
+            if (result === errorObject_1.errorObject) {
+                return this.destination.error(errorObject_1.errorObject.e);
+            }
+        }
+        else {
+            this.hasKey = true;
+        }
+        if (Boolean(result) === false) {
+            this.key = key;
+            this.destination.next(value);
+        }
+    };
+    return DistinctUntilChangedSubscriber;
+}(Subscriber_1.Subscriber));
+//# sourceMappingURL=distinctUntilChanged.js.map
+
+/***/ }),
+
 /***/ "../../../../rxjs/operator/every.js":
 /***/ (function(module, exports, __webpack_require__) {
 
@@ -6845,6 +10933,278 @@ exports.share = share;
 
 /***/ }),
 
+/***/ "../../../../rxjs/operator/throttle.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var __extends = (this && this.__extends) || function (d, b) {
+    for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p];
+    function __() { this.constructor = d; }
+    d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+};
+var OuterSubscriber_1 = __webpack_require__("../../../../rxjs/OuterSubscriber.js");
+var subscribeToResult_1 = __webpack_require__("../../../../rxjs/util/subscribeToResult.js");
+exports.defaultThrottleConfig = {
+    leading: true,
+    trailing: false
+};
+/**
+ * Emits a value from the source Observable, then ignores subsequent source
+ * values for a duration determined by another Observable, then repeats this
+ * process.
+ *
+ * <span class="informal">It's like {@link throttleTime}, but the silencing
+ * duration is determined by a second Observable.</span>
+ *
+ * <img src="./img/throttle.png" width="100%">
+ *
+ * `throttle` emits the source Observable values on the output Observable
+ * when its internal timer is disabled, and ignores source values when the timer
+ * is enabled. Initially, the timer is disabled. As soon as the first source
+ * value arrives, it is forwarded to the output Observable, and then the timer
+ * is enabled by calling the `durationSelector` function with the source value,
+ * which returns the "duration" Observable. When the duration Observable emits a
+ * value or completes, the timer is disabled, and this process repeats for the
+ * next source value.
+ *
+ * @example <caption>Emit clicks at a rate of at most one click per second</caption>
+ * var clicks = Rx.Observable.fromEvent(document, 'click');
+ * var result = clicks.throttle(ev => Rx.Observable.interval(1000));
+ * result.subscribe(x => console.log(x));
+ *
+ * @see {@link audit}
+ * @see {@link debounce}
+ * @see {@link delayWhen}
+ * @see {@link sample}
+ * @see {@link throttleTime}
+ *
+ * @param {function(value: T): SubscribableOrPromise} durationSelector A function
+ * that receives a value from the source Observable, for computing the silencing
+ * duration for each source value, returned as an Observable or a Promise.
+ * @param {Object} config a configuration object to define `leading` and `trailing` behavior. Defaults
+ * to `{ leading: true, trailing: false }`.
+ * @return {Observable<T>} An Observable that performs the throttle operation to
+ * limit the rate of emissions from the source.
+ * @method throttle
+ * @owner Observable
+ */
+function throttle(durationSelector, config) {
+    if (config === void 0) { config = exports.defaultThrottleConfig; }
+    return this.lift(new ThrottleOperator(durationSelector, config.leading, config.trailing));
+}
+exports.throttle = throttle;
+var ThrottleOperator = (function () {
+    function ThrottleOperator(durationSelector, leading, trailing) {
+        this.durationSelector = durationSelector;
+        this.leading = leading;
+        this.trailing = trailing;
+    }
+    ThrottleOperator.prototype.call = function (subscriber, source) {
+        return source.subscribe(new ThrottleSubscriber(subscriber, this.durationSelector, this.leading, this.trailing));
+    };
+    return ThrottleOperator;
+}());
+/**
+ * We need this JSDoc comment for affecting ESDoc
+ * @ignore
+ * @extends {Ignored}
+ */
+var ThrottleSubscriber = (function (_super) {
+    __extends(ThrottleSubscriber, _super);
+    function ThrottleSubscriber(destination, durationSelector, _leading, _trailing) {
+        _super.call(this, destination);
+        this.destination = destination;
+        this.durationSelector = durationSelector;
+        this._leading = _leading;
+        this._trailing = _trailing;
+        this._hasTrailingValue = false;
+    }
+    ThrottleSubscriber.prototype._next = function (value) {
+        if (this.throttled) {
+            if (this._trailing) {
+                this._hasTrailingValue = true;
+                this._trailingValue = value;
+            }
+        }
+        else {
+            var duration = this.tryDurationSelector(value);
+            if (duration) {
+                this.add(this.throttled = subscribeToResult_1.subscribeToResult(this, duration));
+            }
+            if (this._leading) {
+                this.destination.next(value);
+                if (this._trailing) {
+                    this._hasTrailingValue = true;
+                    this._trailingValue = value;
+                }
+            }
+        }
+    };
+    ThrottleSubscriber.prototype.tryDurationSelector = function (value) {
+        try {
+            return this.durationSelector(value);
+        }
+        catch (err) {
+            this.destination.error(err);
+            return null;
+        }
+    };
+    ThrottleSubscriber.prototype._unsubscribe = function () {
+        var _a = this, throttled = _a.throttled, _trailingValue = _a._trailingValue, _hasTrailingValue = _a._hasTrailingValue, _trailing = _a._trailing;
+        this._trailingValue = null;
+        this._hasTrailingValue = false;
+        if (throttled) {
+            this.remove(throttled);
+            this.throttled = null;
+            throttled.unsubscribe();
+        }
+    };
+    ThrottleSubscriber.prototype._sendTrailing = function () {
+        var _a = this, destination = _a.destination, throttled = _a.throttled, _trailing = _a._trailing, _trailingValue = _a._trailingValue, _hasTrailingValue = _a._hasTrailingValue;
+        if (throttled && _trailing && _hasTrailingValue) {
+            destination.next(_trailingValue);
+            this._trailingValue = null;
+            this._hasTrailingValue = false;
+        }
+    };
+    ThrottleSubscriber.prototype.notifyNext = function (outerValue, innerValue, outerIndex, innerIndex, innerSub) {
+        this._sendTrailing();
+        this._unsubscribe();
+    };
+    ThrottleSubscriber.prototype.notifyComplete = function () {
+        this._sendTrailing();
+        this._unsubscribe();
+    };
+    return ThrottleSubscriber;
+}(OuterSubscriber_1.OuterSubscriber));
+//# sourceMappingURL=throttle.js.map
+
+/***/ }),
+
+/***/ "../../../../rxjs/operator/throttleTime.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var __extends = (this && this.__extends) || function (d, b) {
+    for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p];
+    function __() { this.constructor = d; }
+    d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+};
+var Subscriber_1 = __webpack_require__("../../../../rxjs/Subscriber.js");
+var async_1 = __webpack_require__("../../../../rxjs/scheduler/async.js");
+var throttle_1 = __webpack_require__("../../../../rxjs/operator/throttle.js");
+/**
+ * Emits a value from the source Observable, then ignores subsequent source
+ * values for `duration` milliseconds, then repeats this process.
+ *
+ * <span class="informal">Lets a value pass, then ignores source values for the
+ * next `duration` milliseconds.</span>
+ *
+ * <img src="./img/throttleTime.png" width="100%">
+ *
+ * `throttleTime` emits the source Observable values on the output Observable
+ * when its internal timer is disabled, and ignores source values when the timer
+ * is enabled. Initially, the timer is disabled. As soon as the first source
+ * value arrives, it is forwarded to the output Observable, and then the timer
+ * is enabled. After `duration` milliseconds (or the time unit determined
+ * internally by the optional `scheduler`) has passed, the timer is disabled,
+ * and this process repeats for the next source value. Optionally takes a
+ * {@link IScheduler} for managing timers.
+ *
+ * @example <caption>Emit clicks at a rate of at most one click per second</caption>
+ * var clicks = Rx.Observable.fromEvent(document, 'click');
+ * var result = clicks.throttleTime(1000);
+ * result.subscribe(x => console.log(x));
+ *
+ * @see {@link auditTime}
+ * @see {@link debounceTime}
+ * @see {@link delay}
+ * @see {@link sampleTime}
+ * @see {@link throttle}
+ *
+ * @param {number} duration Time to wait before emitting another value after
+ * emitting the last value, measured in milliseconds or the time unit determined
+ * internally by the optional `scheduler`.
+ * @param {Scheduler} [scheduler=async] The {@link IScheduler} to use for
+ * managing the timers that handle the throttling.
+ * @return {Observable<T>} An Observable that performs the throttle operation to
+ * limit the rate of emissions from the source.
+ * @method throttleTime
+ * @owner Observable
+ */
+function throttleTime(duration, scheduler, config) {
+    if (scheduler === void 0) { scheduler = async_1.async; }
+    if (config === void 0) { config = throttle_1.defaultThrottleConfig; }
+    return this.lift(new ThrottleTimeOperator(duration, scheduler, config.leading, config.trailing));
+}
+exports.throttleTime = throttleTime;
+var ThrottleTimeOperator = (function () {
+    function ThrottleTimeOperator(duration, scheduler, leading, trailing) {
+        this.duration = duration;
+        this.scheduler = scheduler;
+        this.leading = leading;
+        this.trailing = trailing;
+    }
+    ThrottleTimeOperator.prototype.call = function (subscriber, source) {
+        return source.subscribe(new ThrottleTimeSubscriber(subscriber, this.duration, this.scheduler, this.leading, this.trailing));
+    };
+    return ThrottleTimeOperator;
+}());
+/**
+ * We need this JSDoc comment for affecting ESDoc.
+ * @ignore
+ * @extends {Ignored}
+ */
+var ThrottleTimeSubscriber = (function (_super) {
+    __extends(ThrottleTimeSubscriber, _super);
+    function ThrottleTimeSubscriber(destination, duration, scheduler, leading, trailing) {
+        _super.call(this, destination);
+        this.duration = duration;
+        this.scheduler = scheduler;
+        this.leading = leading;
+        this.trailing = trailing;
+        this._hasTrailingValue = false;
+        this._trailingValue = null;
+    }
+    ThrottleTimeSubscriber.prototype._next = function (value) {
+        if (this.throttled) {
+            if (this.trailing) {
+                this._trailingValue = value;
+                this._hasTrailingValue = true;
+            }
+        }
+        else {
+            this.add(this.throttled = this.scheduler.schedule(dispatchNext, this.duration, { subscriber: this }));
+            if (this.leading) {
+                this.destination.next(value);
+            }
+        }
+    };
+    ThrottleTimeSubscriber.prototype.clearThrottle = function () {
+        var throttled = this.throttled;
+        if (throttled) {
+            if (this.trailing && this._hasTrailingValue) {
+                this.destination.next(this._trailingValue);
+                this._trailingValue = null;
+                this._hasTrailingValue = false;
+            }
+            throttled.unsubscribe();
+            this.remove(throttled);
+            this.throttled = null;
+        }
+    };
+    return ThrottleTimeSubscriber;
+}(Subscriber_1.Subscriber));
+function dispatchNext(arg) {
+    var subscriber = arg.subscriber;
+    subscriber.clearThrottle();
+}
+//# sourceMappingURL=throttleTime.js.map
+
+/***/ }),
+
 /***/ "../../../../rxjs/scheduler/Action.js":
 /***/ (function(module, exports, __webpack_require__) {
 
@@ -7179,6 +11539,60 @@ var QueueScheduler = (function (_super) {
 }(AsyncScheduler_1.AsyncScheduler));
 exports.QueueScheduler = QueueScheduler;
 //# sourceMappingURL=QueueScheduler.js.map
+
+/***/ }),
+
+/***/ "../../../../rxjs/scheduler/async.js":
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+var AsyncAction_1 = __webpack_require__("../../../../rxjs/scheduler/AsyncAction.js");
+var AsyncScheduler_1 = __webpack_require__("../../../../rxjs/scheduler/AsyncScheduler.js");
+/**
+ *
+ * Async Scheduler
+ *
+ * <span class="informal">Schedule task as if you used setTimeout(task, duration)</span>
+ *
+ * `async` scheduler schedules tasks asynchronously, by putting them on the JavaScript
+ * event loop queue. It is best used to delay tasks in time or to schedule tasks repeating
+ * in intervals.
+ *
+ * If you just want to "defer" task, that is to perform it right after currently
+ * executing synchronous code ends (commonly achieved by `setTimeout(deferredTask, 0)`),
+ * better choice will be the {@link asap} scheduler.
+ *
+ * @example <caption>Use async scheduler to delay task</caption>
+ * const task = () => console.log('it works!');
+ *
+ * Rx.Scheduler.async.schedule(task, 2000);
+ *
+ * // After 2 seconds logs:
+ * // "it works!"
+ *
+ *
+ * @example <caption>Use async scheduler to repeat task in intervals</caption>
+ * function task(state) {
+ *   console.log(state);
+ *   this.schedule(state + 1, 1000); // `this` references currently executing Action,
+ *                                   // which we reschedule with new state and delay
+ * }
+ *
+ * Rx.Scheduler.async.schedule(task, 3000, 0);
+ *
+ * // Logs:
+ * // 0 after 3s
+ * // 1 after 4s
+ * // 2 after 5s
+ * // 3 after 6s
+ *
+ * @static true
+ * @name async
+ * @owner Scheduler
+ */
+exports.async = new AsyncScheduler_1.AsyncScheduler(AsyncAction_1.AsyncAction);
+//# sourceMappingURL=async.js.map
 
 /***/ }),
 
